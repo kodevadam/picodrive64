@@ -21,8 +21,13 @@
 #define STATIC_SH2_REGS	{ SHR_SR,22 , SHR_R(0),21 , SHR_R(1),20 }
 
 // NB: the ubiquitous JZ74[46]0 uses MIPS32 Release 1, a slight MIPS II superset
+// VR4300 (N64) is MIPS III which predates MIPS32, so isa_rev should be 0
 #ifndef __mips_isa_rev
+#ifdef N64
+#define __mips_isa_rev	0  // VR4300 is MIPS III, predates MIPS32
+#else
 #define __mips_isa_rev	1  // surprisingly not always defined
+#endif
 #endif
 
 // registers usable for user code: r1-r25, others reserved or special

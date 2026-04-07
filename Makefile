@@ -258,6 +258,21 @@ OBJS += platform/ps2/emu.o
 OBJS += platform/ps2/in_ps2.o
 USE_FRONTEND = 1
 endif
+ifeq "$(PLATFORM)" "n64"
+# Nintendo 64 via libdragon
+CFLAGS += -DN64
+# Disable features that won't fit in N64 RAM
+no_32x = 1
+no_sms = 0
+use_libchdr = 0
+use_fame = 1
+use_cz80 = 1
+use_sh2drc = 0
+OBJS += platform/n64/plat.o
+OBJS += platform/n64/emu.o
+OBJS += platform/n64/in_n64.o
+USE_FRONTEND = 1
+endif
 ifeq "$(PLATFORM)" "win32"
 CFLAGS += -DSDL_OVERLAY_2X -DSDL_BUFFER_3X -DSDL_REDRAW_EVT
 OBJS += platform/win32/plat.o
