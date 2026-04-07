@@ -1,8 +1,63 @@
-# PicoDrive N64 Porting Plan
+# PicoDrive N64 Port
 
-## Overview
+## Quick Start (SummerCart64)
 
-Port PicoDrive (Sega Genesis/Mega Drive, Master System, Game Gear, Sega CD, 32X emulator) to run on Nintendo 64 hardware using the libdragon SDK.
+### Build
+
+```bash
+# Prerequisites: libdragon SDK installed, N64_INST set
+export N64_INST=/opt/libdragon
+export PATH=$N64_INST/bin:$PATH
+
+# Configure and build
+./configure --platform=n64
+make
+
+# Build .z64 ROM image
+make -C platform/n64 rom
+```
+
+### Setup on SD Card
+
+```
+sd:/
+  PicoDrive64.z64          <- ROM file (or load via SC64 menu)
+  picodrive/
+    roms/                   <- Put Genesis/SMS/GG ROMs here
+      sonic.bin
+      streets_of_rage.md
+    saves/                  <- Save states auto-created here
+    config2.cfg             <- Config auto-created here
+```
+
+### Controls
+
+| N64 Button | Genesis | Menu |
+|------------|---------|------|
+| D-Pad/Stick | D-Pad | Navigate |
+| A | B | OK |
+| B | C | Back |
+| Z | A | Alt action |
+| L | X | Page left |
+| R | Z | Page right |
+| C-Right | Y | - |
+| Start | Start | - |
+| C-Up | - | Open menu |
+| C-Down | - | Save state |
+| C-Left | - | Load state |
+
+### Requirements
+
+- **Expansion Pak strongly recommended** (8 MB): supports ROMs up to 4 MB
+- Without Expansion Pak (4 MB): only ROMs up to ~1 MB
+
+---
+
+## Porting Plan
+
+### Overview
+
+Port PicoDrive (Sega Genesis/Mega Drive, Master System, Game Gear emulator) to run on Nintendo 64 hardware using the libdragon SDK. Targets SummerCart64 flashcart for ROM loading.
 
 ## N64 Hardware Summary
 
