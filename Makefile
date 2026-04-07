@@ -259,7 +259,7 @@ OBJS += platform/ps2/in_ps2.o
 USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "n64"
-# Nintendo 64 via libdragon
+# Nintendo 64 via libdragon (targets SummerCart64)
 CFLAGS += -DN64
 # Disable features that won't fit in N64 RAM
 no_32x = 1
@@ -268,10 +268,15 @@ use_libchdr = 0
 use_fame = 1
 use_cz80 = 1
 use_sh2drc = 0
+use_svpdrc = 0
 OBJS += platform/n64/plat.o
 OBJS += platform/n64/emu.o
 OBJS += platform/n64/in_n64.o
+OBJS += platform/n64/menu_n64.o
+OBJS += platform/n64/readpng_n64.o
+OBJS += platform/n64/sndout_n64.o
 USE_FRONTEND = 1
+N64_BUILD = 1
 endif
 ifeq "$(PLATFORM)" "win32"
 CFLAGS += -DSDL_OVERLAY_2X -DSDL_BUFFER_3X -DSDL_REDRAW_EVT
@@ -316,14 +321,19 @@ OBJS += platform/common/main.o platform/common/emu.o platform/common/upscale.o \
 	platform/common/menu_pico.o platform/common/keyboard.o platform/common/config_file.o
 
 # libpicofe
-OBJS += platform/libpicofe/input.o platform/libpicofe/readpng.o \
+ifneq "$(N64_BUILD)" "1"
+OBJS += platform/libpicofe/readpng.o
+endif
+OBJS += platform/libpicofe/input.o \
 	platform/libpicofe/fonts.o
 ifneq (,$(filter %HAVE_GLES, $(CFLAGS)))
 OBJS += platform/libpicofe/gl.o platform/libpicofe/gl_platform.o
 endif
 
 # libpicofe - sound
+ifneq "$(N64_BUILD)" "1"
 OBJS += platform/libpicofe/sndout.o
+endif
 ifneq ($(findstring oss,$(SOUND_DRIVERS)),)
 platform/libpicofe/sndout.o: CFLAGS += -DHAVE_OSS
 OBJS += platform/libpicofe/linux/sndout_oss.o
@@ -344,6 +354,7 @@ endif
 endif # USE_FRONTEND
 
 ifneq "$(PLATFORM)" "psp"
+ifneq "$(N64_BUILD)" "1"
 OBJS += platform/common/mp3.o platform/common/mp3_sync.o
 ifeq "$(PLATFORM_MP3)" "1"
 OBJS += platform/common/mp3_helix.o
@@ -353,6 +364,7 @@ else
 #OBJS += platform/common/mp3_minimp3.o
 OBJS += platform/common/mp3_drmp3.o
 endif
+endif # N64_BUILD
 endif
 
 ifeq (1,$(use_libchdr))

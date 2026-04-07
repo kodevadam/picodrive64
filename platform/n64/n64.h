@@ -1,6 +1,7 @@
 /*
  * PicoDrive N64 platform header
- * Constants, helpers, and hardware definitions for Nintendo 64 port
+ * Constants, helpers, and hardware definitions for Nintendo 64 port.
+ * Targets SummerCart64 flashcart for ROM loading via SD card.
  *
  * (C) 2026
  * This work is licensed under the terms of MAME license.
@@ -19,62 +20,66 @@
 
 /* Audio configuration */
 #define N64_AUDIO_RATE      22050   /* balance of quality vs CPU */
-#define N64_AUDIO_BUFSIZE   (N64_AUDIO_RATE / 50) /* ~441 samples per frame */
+#define N64_AUDIO_BUFSIZE   (N64_AUDIO_RATE / 50)
 
-/* Memory budget (8 MB with Expansion Pak) */
+/* Memory budget */
 #define N64_RDRAM_SIZE_4MB  (4 * 1024 * 1024)
 #define N64_RDRAM_SIZE_8MB  (8 * 1024 * 1024)
 
-/* Memory pool for plat_mmap allocations */
-#define N64_MEMPOOL_SIZE    (5 * 1024 * 1024) /* 5 MB for ROM + emulator data */
-#define N64_DRC_POOL_SIZE   (256 * 1024)      /* 256 KB for DRC code cache */
+/* Memory pool sizes */
+#define N64_MEMPOOL_SIZE       (5 * 1024 * 1024)    /* 5 MB with Expansion Pak */
+#define N64_MEMPOOL_4MB_SIZE   (1536 * 1024)         /* 1.5 MB without */
+#define N64_DRC_POOL_SIZE      (256 * 1024)          /* 256 KB for DRC code cache */
 
 /* Frame buffer size: 320x240x2 bytes = 150KB */
 #define N64_FB_SIZE         (N64_SCREEN_WIDTH * N64_SCREEN_HEIGHT * 2)
 
 /* Audio ring buffer: 7 chunks like PSP port */
 #define N64_SND_BLOCK_COUNT 7
-#define N64_SND_CHUNK_SIZE  (2 * N64_AUDIO_RATE / 50) /* stereo samples per frame */
+#define N64_SND_CHUNK_SIZE  (2 * N64_AUDIO_RATE / 50)
 #define N64_SND_BUF_SIZE    (N64_SND_CHUNK_SIZE * N64_SND_BLOCK_COUNT)
 
-/* N64 controller button masks (from libdragon joypad.h) */
-/* These map to joypad_buttons_t fields */
-#define N64_BTN_A           0x8000
-#define N64_BTN_B           0x4000
-#define N64_BTN_Z           0x2000
-#define N64_BTN_START       0x1000
-#define N64_BTN_DU          0x0800
-#define N64_BTN_DD          0x0400
-#define N64_BTN_DL          0x0200
-#define N64_BTN_DR          0x0100
-#define N64_BTN_L           0x0020
-#define N64_BTN_R           0x0010
-#define N64_BTN_CU          0x0008
-#define N64_BTN_CD          0x0004
-#define N64_BTN_CL          0x0002
-#define N64_BTN_CR          0x0001
+/* N64 controller button bit positions (for input driver) */
+enum {
+	N64_BIT_A = 0,
+	N64_BIT_B,
+	N64_BIT_Z,
+	N64_BIT_START,
+	N64_BIT_DU,
+	N64_BIT_DD,
+	N64_BIT_DL,
+	N64_BIT_DR,
+	N64_BIT_L,
+	N64_BIT_R,
+	N64_BIT_CU,
+	N64_BIT_CD,
+	N64_BIT_CL,
+	N64_BIT_CR,
+	N64_BIT_NUBUP,
+	N64_BIT_NUBDOWN,
+	N64_BIT_COUNT
+};
 
 /* Analog stick deadzone threshold */
 #define N64_ANALOG_DEADZONE 20
 
-/* VR4300 cache operations for DRC support */
-static inline void n64_dcache_writeback(void *addr, unsigned long len)
-{
-    data_cache_hit_writeback(addr, len);
-}
-
-static inline void n64_icache_invalidate(void *addr, unsigned long len)
-{
-    inst_cache_hit_invalidate(addr, len);
-}
-
 /* Check if Expansion Pak is present (8 MB RAM) */
 static inline int n64_has_expansion_pak(void)
 {
-    return get_memory_size() >= N64_RDRAM_SIZE_8MB;
+	return get_memory_size() >= N64_RDRAM_SIZE_8MB;
 }
 
-/* ROM filesystem path prefix for flashcart SD access */
-#define N64_ROM_PATH_PREFIX "sd:/"
+/* SummerCart64 SD card paths */
+#define N64_SD_ROOT     "sd:/"
+#define N64_SAVE_DIR    "sd:/picodrive/saves/"
+#define N64_CONFIG_DIR  "sd:/picodrive/"
+#define N64_ROM_DIR     "sd:/picodrive/roms/"
+
+/* Query functions (implemented in plat.c) */
+int    n64_get_expansion_pak(void);
+size_t n64_get_max_rom_size(void);
+
+/* Logging */
+void lprintf(const char *fmt, ...);
 
 #endif /* __N64_PLATFORM_H__ */

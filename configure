@@ -315,12 +315,14 @@ n64)
   ;;
 esac
 
-# basic compiler test
+# basic compiler test (skip for N64 cross-compilation)
+if [ "$platform" != "n64" ]; then
 cat > $TMPC <<EOF
 int main (int argc, char *argv[]) { return 0; }
 EOF
 if ! compile_binary; then
   fail "compiler test failed, please check config.log"
+fi
 fi
 
 # header/library presence tests
@@ -398,7 +400,11 @@ test -n "$SDL_CONFIG" || SDL_CONFIG=false
 
 MAIN_LDLIBS="$LDLIBS -lm"
 
-check_zlib -lz && MAIN_LDLIBS="$MAIN_LDLIBS -lz" || need_zlib="yes"
+if [ "$platform" != "n64" ]; then
+  check_zlib -lz && MAIN_LDLIBS="$MAIN_LDLIBS -lz" || need_zlib="yes"
+else
+  need_zlib="yes"
+fi
 
 if [ "$platform" != "n64" ]; then
   MAIN_LDLIBS="-lpng $MAIN_LDLIBS"
@@ -421,8 +427,10 @@ esac
 #  MAIN_LDLIBS="-lchdr $MAIN_LDLIBS"
 #fi
 
-# find what audio support we can compile
-if [ "x$sound_drivers" = "x" ]; then
+# find what audio support we can compile (skip for N64 cross-compilation)
+if [ "$platform" = "n64" ]; then
+  sound_drivers=""
+elif [ "x$sound_drivers" = "x" ]; then
   if check_oss; then sound_drivers="$sound_drivers oss"; fi
   if check_alsa -lasound; then
     sound_drivers="$sound_drivers alsa"

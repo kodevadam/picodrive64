@@ -1,5 +1,6 @@
 /*
  * Platform interface functions for N64 PicoDrive frontend
+ * Targets SummerCart64 flashcart with SD card filesystem.
  *
  * (C) 2026
  * This work is licensed under the terms of MAME license.
@@ -9,40 +10,98 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #include "../common/emu.h"
-#include "../libpicofe/menu.h"
 #include "../libpicofe/plat.h"
 
 #include <pico/pico_int.h>
 
 #include "n64.h"
+#include "in_n64.h"
 
-/* Simple memory pool for plat_mmap allocations */
-static uint8_t mem_pool[N64_MEMPOOL_SIZE] __attribute__((aligned(16)));
+/*
+ * Memory layout (8 MB Expansion Pak):
+ *   0 - ~1MB:   PicoDrive code + static data
+ *   mem_pool:   5 MB for ROM + emulator allocations
+ *   drc_pool:   256 KB for DRC code cache
+ *   screen_buffer, menubg_buffer: 150 KB each
+ *   Stack + heap for libdragon: remaining
+ *
+ * Without Expansion Pak (4 MB):
+ *   mem_pool shrinks to 1.5 MB (small ROMs only)
+ */
+
+/* Expansion Pak state */
+static int has_expansion_pak = 0;
+static size_t mem_pool_size = 0;
+
+/* Dynamic memory pool - allocated at runtime based on RAM size */
+static uint8_t *mem_pool = NULL;
 static size_t mem_pool_offset = 0;
 
 /* DRC code cache region */
 static uint8_t drc_pool[N64_DRC_POOL_SIZE] __attribute__((aligned(4096)));
 
-/* Screen buffer */
+/* Screen buffers */
 static uint16_t __attribute__((aligned(16))) screen_buffer[N64_SCREEN_WIDTH * N64_SCREEN_HEIGHT];
-
-/* Menu background buffer */
 static uint16_t __attribute__((aligned(16))) menubg_buffer[N64_SCREEN_WIDTH * N64_SCREEN_HEIGHT];
+
+/* Convert RGB565 to RGBA5551 (N64 native format)
+ * RGB565:  RRRR RGGG GGGB BBBB
+ * RGBA5551: RRRR RGGG GGBB BBBa
+ */
+static inline uint16_t rgb565_to_rgba5551(uint16_t c)
+{
+	uint16_t r = (c >> 11) & 0x1f;
+	uint16_t g = (c >> 5) & 0x3f;
+	uint16_t b = c & 0x1f;
+	/* Convert 6-bit green to 5-bit, set alpha=1 */
+	return (r << 11) | ((g >> 1) << 6) | (b << 1) | 1;
+}
+
+/* Batch convert a line of pixels from RGB565 to RGBA5551 */
+static void convert_line_rgb565_to_rgba5551(uint16_t *dst, const uint16_t *src, int width)
+{
+	for (int x = 0; x < width; x++)
+		dst[x] = rgb565_to_rgba5551(src[x]);
+}
 
 /* System level initialization */
 int plat_target_init(void)
 {
-	/* Initialize N64 subsystems */
+	/* Initialize N64 debug output (USB/ISViewer) */
 	debug_init_isviewer();
 	debug_init_usblog();
+
+	/* Detect Expansion Pak */
+	has_expansion_pak = n64_has_expansion_pak();
+	if (has_expansion_pak) {
+		mem_pool_size = N64_MEMPOOL_SIZE;     /* 5 MB */
+		lprintf("N64: Expansion Pak detected (8 MB RDRAM)\n");
+	} else {
+		mem_pool_size = N64_MEMPOOL_4MB_SIZE; /* 1.5 MB */
+		lprintf("N64: No Expansion Pak (4 MB RDRAM) - only small ROMs!\n");
+	}
+
+	/* Allocate memory pool */
+	mem_pool = (uint8_t *)malloc(mem_pool_size);
+	if (!mem_pool) {
+		lprintf("N64: FATAL - cannot allocate memory pool!\n");
+		return -1;
+	}
+	memset(mem_pool, 0, mem_pool_size);
 
 	/* Initialize display: 320x240 16-bit */
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
 
-	/* Initialize filesystem for ROM loading from SD card */
-	dfs_init(DFS_DEFAULT_LOCATION);
+	/* Initialize timer for timing functions */
+	timer_init();
+
+	/* Initialize SummerCart64 SD filesystem */
+	if (dfs_init(DFS_DEFAULT_LOCATION) != DFS_ESUCCESS) {
+		lprintf("N64: DFS init failed, trying fat filesystem...\n");
+	}
 
 	/* Initialize joypad */
 	joypad_init();
@@ -71,43 +130,67 @@ int plat_target_init(void)
 void plat_target_finish(void)
 {
 	display_close();
-}
-
-/* Display a completed frame buffer and prepare a new render buffer */
-void plat_video_flip(void)
-{
-	surface_t *fb = display_get();
-	if (fb) {
-		/* Copy emulator framebuffer to N64 display surface.
-		 * PicoDrive renders RGB555/RGB565, N64 uses RGBA5551.
-		 * For now, do a direct copy assuming compatible format;
-		 * pixel format conversion will be added if needed.
-		 */
-		uint16_t *src = (uint16_t *)g_screen_ptr;
-		uint16_t *dst = (uint16_t *)fb->buffer;
-		int src_h = g_screen_height;
-		int y_offset = (N64_SCREEN_HEIGHT - src_h) / 2;
-
-		/* Clear the framebuffer first if there's vertical offset */
-		if (y_offset > 0) {
-			memset(dst, 0, N64_FB_SIZE);
-		}
-
-		/* Copy visible lines */
-		for (int y = 0; y < src_h; y++) {
-			memcpy(&dst[(y + y_offset) * N64_SCREEN_WIDTH],
-			       &src[y * g_screen_ppitch],
-			       g_screen_width * sizeof(uint16_t));
-		}
-
-		display_show(fb);
+	if (mem_pool) {
+		free(mem_pool);
+		mem_pool = NULL;
 	}
 }
 
-/* Wait for start of vertical blanking */
+/* Called by common frontend to set up the input driver */
+void plat_target_setup_input(void)
+{
+	/* Default bindings are defined in in_n64.c */
+	static struct in_default_bind n64_defbinds[] = {
+		{ N64_BIT_DU,      IN_BINDTYPE_PLAYER12, GBTN_UP },
+		{ N64_BIT_DD,      IN_BINDTYPE_PLAYER12, GBTN_DOWN },
+		{ N64_BIT_DL,      IN_BINDTYPE_PLAYER12, GBTN_LEFT },
+		{ N64_BIT_DR,      IN_BINDTYPE_PLAYER12, GBTN_RIGHT },
+		{ N64_BIT_A,       IN_BINDTYPE_PLAYER12, GBTN_B },
+		{ N64_BIT_B,       IN_BINDTYPE_PLAYER12, GBTN_C },
+		{ N64_BIT_Z,       IN_BINDTYPE_PLAYER12, GBTN_A },
+		{ N64_BIT_L,       IN_BINDTYPE_PLAYER12, GBTN_X },
+		{ N64_BIT_R,       IN_BINDTYPE_PLAYER12, GBTN_Z },
+		{ N64_BIT_CR,      IN_BINDTYPE_PLAYER12, GBTN_Y },
+		{ N64_BIT_START,   IN_BINDTYPE_PLAYER12, GBTN_START },
+		{ N64_BIT_CU,      IN_BINDTYPE_EMU, PEVB_MENU },
+		{ N64_BIT_CD,      IN_BINDTYPE_EMU, PEVB_STATE_SAVE },
+		{ N64_BIT_CL,      IN_BINDTYPE_EMU, PEVB_STATE_LOAD },
+		{ 0, 0, 0 }
+	};
+	in_n64_init(n64_defbinds);
+}
+
+/* Display a completed frame buffer with pixel format conversion */
+void plat_video_flip(void)
+{
+	surface_t *fb = display_get();
+	if (!fb)
+		return;
+
+	uint16_t *src = (uint16_t *)g_screen_ptr;
+	uint16_t *dst = (uint16_t *)fb->buffer;
+	int src_h = g_screen_height;
+	int src_w = g_screen_width;
+	int y_offset = (N64_SCREEN_HEIGHT - src_h) / 2;
+	int x_offset = (N64_SCREEN_WIDTH - src_w) / 2;
+
+	/* Clear if there are borders */
+	if (y_offset > 0 || x_offset > 0)
+		memset(dst, 0, N64_FB_SIZE);
+
+	/* Copy with RGB565 -> RGBA5551 conversion */
+	for (int y = 0; y < src_h && (y + y_offset) < N64_SCREEN_HEIGHT; y++) {
+		convert_line_rgb565_to_rgba5551(
+			&dst[(y + y_offset) * N64_SCREEN_WIDTH + x_offset],
+			&src[y * g_screen_ppitch],
+			src_w);
+	}
+
+	display_show(fb);
+}
+
 void plat_video_wait_vsync(void)
 {
-	/* libdragon handles vsync internally via display_get() */
 }
 
 void plat_video_menu_update(void)
@@ -156,17 +239,18 @@ void plat_early_init(void)
 {
 }
 
-/* Base directory for configuration and save files */
+/* Base directory for configuration and save files on SD card */
 int plat_get_root_dir(char *dst, int len)
 {
-	if (len > 4)
-		strcpy(dst, "sd:/");
+	const char *path = "sd:/picodrive/";
+	int plen = strlen(path);
+	if (len > plen)
+		strcpy(dst, path);
 	else if (len > 0)
 		*dst = 0;
 	return strlen(dst);
 }
 
-/* Base directory for emulator resources */
 int plat_get_skin_dir(char *dst, int len)
 {
 	if (len > 5)
@@ -176,80 +260,82 @@ int plat_get_skin_dir(char *dst, int len)
 	return strlen(dst);
 }
 
-/* Top directory for ROM images */
+/* Top directory for ROM images on SummerCart64 SD */
 int plat_get_data_dir(char *dst, int len)
 {
-	if (len > 9)
-		strcpy(dst, "sd:/roms/");
+	const char *path = "sd:/picodrive/roms/";
+	int plen = strlen(path);
+	if (len > plen)
+		strcpy(dst, path);
 	else if (len > 0)
 		*dst = 0;
 	return strlen(dst);
 }
 
-/* Check if path is a directory */
 int plat_is_dir(const char *path)
 {
-	/* Use standard stat approach */
 	struct stat st;
 	if (stat(path, &st) == 0)
 		return S_ISDIR(st.st_mode);
 	return 0;
 }
 
-/* Current time in ms */
 unsigned int plat_get_ticks_ms(void)
 {
-	return timer_ticks() / (TICKS_PER_SECOND / 1000);
+	return TICKS_TO_MS(timer_ticks());
 }
 
-/* Current time in us */
 unsigned int plat_get_ticks_us(void)
 {
-	return timer_ticks() / (TICKS_PER_SECOND / 1000000);
+	/* Convert ticks to microseconds */
+	return (unsigned int)((uint64_t)timer_ticks() * 1000000ULL / TICKS_PER_SECOND);
 }
 
-/* Sleep for some time in ms */
 void plat_sleep_ms(int ms)
 {
 	wait_ms(ms);
 }
 
-/* Sleep for some time in us */
 void plat_wait_till_us(unsigned int us_to)
 {
 	unsigned int now = plat_get_ticks_us();
-	if (us_to > now)
-		wait_ms((us_to - now) / 1000);
+	if (us_to > now) {
+		unsigned int diff = us_to - now;
+		if (diff > 1000)
+			wait_ms(diff / 1000);
+	}
 }
 
-/* Wait until some event occurs, or timeout */
 int plat_wait_event(int *fds_hnds, int count, int timeout_ms)
 {
-	return 0; /* unused on N64 */
+	return 0;
 }
 
-/* Memory mapping functions - simple pool allocator */
+/* Memory pool allocator */
 void *plat_mmap(unsigned long addr, size_t size, int need_exec, int is_fixed)
 {
-	/* Align to 16 bytes */
+	if (!mem_pool)
+		return malloc(size);
+
 	size_t aligned_offset = (mem_pool_offset + 15) & ~15;
 
-	if (aligned_offset + size > N64_MEMPOOL_SIZE) {
-		lprintf("plat_mmap: out of memory! requested %u, used %u/%u\n",
-			(unsigned)size, (unsigned)aligned_offset, N64_MEMPOOL_SIZE);
+	if (aligned_offset + size > mem_pool_size) {
+		lprintf("plat_mmap: pool exhausted! need %u, used %u/%u\n",
+			(unsigned)size, (unsigned)aligned_offset, (unsigned)mem_pool_size);
+		/* Fall back to malloc for small allocations */
+		if (size < 65536)
+			return calloc(1, size);
 		return NULL;
 	}
 
 	void *ptr = &mem_pool[aligned_offset];
 	mem_pool_offset = aligned_offset + size;
 	memset(ptr, 0, size);
-
 	return ptr;
 }
 
 void *plat_mremap(void *ptr, size_t oldsize, size_t newsize)
 {
-	/* Can't easily remap in a pool allocator - allocate new */
 	if (newsize <= oldsize)
 		return ptr;
 
@@ -261,12 +347,15 @@ void *plat_mremap(void *ptr, size_t oldsize, size_t newsize)
 
 void plat_munmap(void *ptr, size_t size)
 {
-	/* Pool allocator - can't free individual allocations.
-	 * Memory is reclaimed when the emulator resets.
-	 */
+	/* Check if it's from our pool - if not, it was malloc'd */
+	if (mem_pool && ptr >= (void *)mem_pool &&
+	    ptr < (void *)(mem_pool + mem_pool_size))
+		return; /* pool memory, can't free individually */
+
+	/* Was a malloc fallback allocation */
+	free(ptr);
 }
 
-/* DRC code cache allocation */
 void *plat_mem_get_for_drc(size_t size)
 {
 	if (size > N64_DRC_POOL_SIZE)
@@ -276,11 +365,10 @@ void *plat_mem_get_for_drc(size_t size)
 
 int plat_mem_set_exec(void *ptr, size_t size)
 {
-	/* N64 bare metal - no memory protection to set */
-	return 0;
+	return 0; /* bare metal, no memory protection */
 }
 
-/* Cache flush for DRC - critical on VR4300 */
+/* VR4300 cache management - critical for DRC */
 void cache_flush_d_inval_i(void *start_addr, void *end_addr)
 {
 	size_t len = (char *)end_addr - (char *)start_addr;
@@ -290,17 +378,32 @@ void cache_flush_d_inval_i(void *start_addr, void *end_addr)
 	}
 }
 
-/* Sound rates available */
+/* Platform capabilities */
 static int sound_rates[] = { 11025, 22050, 44100, -1 };
 
 struct plat_target plat_target = {
-	.cpu_clock_get = NULL,
-	.cpu_clock_set = NULL,
+	.cpu_clock_get    = NULL,
+	.cpu_clock_set    = NULL,
 	.bat_capacity_get = NULL,
-	.sound_rates = sound_rates,
+	.sound_rates      = sound_rates,
 };
 
-/* Required by some libc/newlib environments */
+/* Query functions for N64-specific state */
+int n64_get_expansion_pak(void)
+{
+	return has_expansion_pak;
+}
+
+size_t n64_get_max_rom_size(void)
+{
+	/* Leave room for emulator data in the pool */
+	if (has_expansion_pak)
+		return 4 * 1024 * 1024; /* 4 MB with Expansion Pak */
+	else
+		return 1024 * 1024;     /* 1 MB without */
+}
+
+/* posix_memalign for newlib compatibility */
 int posix_memalign(void **p, size_t align, size_t size)
 {
 	if (p) {
