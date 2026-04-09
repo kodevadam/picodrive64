@@ -1541,8 +1541,8 @@ void ym2612_unpack_timers(const void *buf, size_t size)
   elprintf(EL_YMTIMER, "load: %i/%i, timer_b_next_oflow %i", tbt>>16, tbc>>16, Pico.t.timer_b_next_oflow >> 8);
 }
 
-#if defined(NO_32X) && defined(_ASM_MEMORY_C)
-// referenced by asm code
+#if defined(NO_32X)
+// stub 32X handlers when 32X support is compiled out
 u32 PicoRead8_32x(u32 a) { return 0; }
 u32 PicoRead16_32x(u32 a) { return 0; }
 void PicoWrite8_32x(u32 a, u32 d) {}

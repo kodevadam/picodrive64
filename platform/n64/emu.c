@@ -111,7 +111,9 @@ void pemu_forced_frame(int no_scale, int do_emu)
 {
 	PicoDrawSetOutFormat(PDF_RGB555, 0);
 	PicoDrawSetOutBuf(g_screen_ptr, g_screen_ppitch * 2);
+#ifndef NO_32X
 	PicoDraw32xSetFrameMode(0, 0);
+#endif
 	PicoIn.opt &= ~POPT_ALT_RENDERER;
 
 	if (do_emu)
@@ -160,11 +162,7 @@ void emu_video_mode_change(int start_line, int line_count, int start_col, int co
 	g_screen_ppitch = N64_SCREEN_WIDTH;
 }
 
-/* 32X startup - switch to 16-bit mode */
-void emu_32x_startup(void)
-{
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
-}
+/* emu_32x_startup provided by platform/common/emu.c */
 
 /* Logging */
 void lprintf(const char *fmt, ...)

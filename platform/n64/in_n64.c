@@ -20,30 +20,10 @@
 #include "n64.h"
 
 #define IN_N64_PREFIX "n64:"
-#define IN_N64_NBUTTONS 16
+#define IN_N64_NBUTTONS N64_BIT_COUNT
 
 static int in_n64_combo_keys = 0;
 static int in_n64_combo_acts = 0;
-
-/* Button bit positions matching joypad_buttons_t layout */
-enum {
-	N64_BIT_A = 0,
-	N64_BIT_B,
-	N64_BIT_Z,
-	N64_BIT_START,
-	N64_BIT_DU,
-	N64_BIT_DD,
-	N64_BIT_DL,
-	N64_BIT_DR,
-	N64_BIT_L,
-	N64_BIT_R,
-	N64_BIT_CU,
-	N64_BIT_CD,
-	N64_BIT_CL,
-	N64_BIT_CR,
-	N64_BIT_NUBUP,
-	N64_BIT_NUBDOWN,
-};
 
 static const char *in_n64_keys[IN_N64_NBUTTONS] = {
 	[N64_BIT_A]       = "A",
@@ -256,39 +236,8 @@ void in_n64_init(struct in_default_bind *defbinds)
 	in_register_driver(&in_n64_drv, defbinds, NULL, NULL);
 }
 
-/* Called from common emu.c to read gamepad state for all controllers */
-void emu_update_input(void)
-{
-	/* Input is handled through the libpicofe input driver above.
-	 * For multiplayer, we also read controllers 2-4 directly.
-	 */
-	joypad_poll();
-
-	/* Controllers 2-4 for multiplayer */
-	joypad_port_t ports[] = { JOYPAD_PORT_2, JOYPAD_PORT_3, JOYPAD_PORT_4 };
-	int pad_idx;
-
-	for (pad_idx = 0; pad_idx < 3; pad_idx++) {
-		if (joypad_get_style(ports[pad_idx]) == JOYPAD_STYLE_NONE)
-			continue;
-
-		joypad_buttons_t btns = joypad_get_buttons_pressed(ports[pad_idx]);
-		joypad_inputs_t inputs = joypad_get_inputs(ports[pad_idx]);
-		unsigned int pad = 0;
-
-		if (btns.d_up || inputs.stick_y > N64_ANALOG_DEADZONE)  pad |= 1 << GBTN_UP;
-		if (btns.d_down || inputs.stick_y < -N64_ANALOG_DEADZONE) pad |= 1 << GBTN_DOWN;
-		if (btns.d_left || inputs.stick_x < -N64_ANALOG_DEADZONE) pad |= 1 << GBTN_LEFT;
-		if (btns.d_right || inputs.stick_x > N64_ANALOG_DEADZONE) pad |= 1 << GBTN_RIGHT;
-		if (btns.a)     pad |= 1 << GBTN_B;
-		if (btns.b)     pad |= 1 << GBTN_C;
-		if (btns.z)     pad |= 1 << GBTN_A;
-		if (btns.start) pad |= 1 << GBTN_START;
-		if (btns.l)     pad |= 1 << GBTN_X;
-		if (btns.r)     pad |= 1 << GBTN_Z;
-		if (btns.c_right) pad |= 1 << GBTN_Y;
-
-		/* pad_idx 0=port2, 1=port3, 2=port4 -> PicoIn.pad[1..3] */
-		PicoIn.pad[pad_idx + 1] = pad;
-	}
-}
+/* emu_update_input is provided by platform/common/emu.c using
+ * the libpicofe input driver framework. Our N64 input driver
+ * above (in_n64_drv) plugs into that framework for controller 1.
+ * TODO: register additional input drivers for controllers 2-4.
+ */

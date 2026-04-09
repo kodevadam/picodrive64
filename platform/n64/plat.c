@@ -10,10 +10,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <malloc.h>
 #include <sys/stat.h>
 
 #include "../common/emu.h"
+#include "../common/input_pico.h"
 #include "../libpicofe/plat.h"
+#include "../libpicofe/menu.h"
 
 #include <pico/pico_int.h>
 

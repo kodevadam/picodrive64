@@ -27,7 +27,7 @@ void dump(u16 w)
 }
 */
 
-u64 get_ticks(void)
+u64 pico_get_ticks(void)
 {
     struct timeval tv;
     u64 ret;
@@ -206,14 +206,14 @@ static u32 PicoRead8_pico_kb(u32 a)
           if (PicoPicohw.kb.start_time_keydown == 0) {
             d |= 8; // Send key down a.k.a. make
             PicoPicohw.kb.time_keydown = 0;
-            PicoPicohw.kb.start_time_keydown = get_ticks();
+            PicoPicohw.kb.start_time_keydown = pico_get_ticks();
            if (PicoPicohw.kb.key_state == PKEY_DOWN)
               elprintf(EL_PICOHW, "PicoPicohw.kb.key_state: PKEY DOWN\n");
            else
               elprintf(EL_PICOHW, "PicoPicohw.kb.key_state: PSHIFT DOWN\n");
           }
           // Simulate key repeat while held down a.k.a. typematic
-          PicoPicohw.kb.time_keydown = get_ticks() - PicoPicohw.kb.start_time_keydown;
+          PicoPicohw.kb.time_keydown = pico_get_ticks() - PicoPicohw.kb.start_time_keydown;
           if (PicoPicohw.kb.time_keydown > 350
                   // Modifier keys don't have typematic
                   && key_code != PEVB_KBD_CAPSLOCK
