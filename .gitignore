@@ -35,3 +35,7 @@ PicoDrive*.zip
 pico_int_offs.h
 amalgamate
 textfilter
+PicoDrive64.bin
+PicoDrive64.z64
+*.z64
+*.bin
