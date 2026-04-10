@@ -276,6 +276,11 @@ OBJS += platform/n64/menu_n64.o
 OBJS += platform/n64/readpng_n64.o
 OBJS += platform/n64/sndout_n64.o
 USE_FRONTEND = 1
+ifeq "$(N64_EMBEDDED_ROM)" "1"
+# Replace common main with N64 standalone main (embedded ROM, auto-start)
+OBJS += platform/n64/main_n64.o
+N64_STANDALONE = 1
+endif
 N64_BUILD = 1
 endif
 ifeq "$(PLATFORM)" "win32"
@@ -317,7 +322,10 @@ endif
 ifeq "$(USE_FRONTEND)" "1"
 
 # common
-OBJS += platform/common/main.o platform/common/emu.o platform/common/upscale.o \
+ifneq "$(N64_STANDALONE)" "1"
+OBJS += platform/common/main.o
+endif
+OBJS += platform/common/emu.o platform/common/upscale.o \
 	platform/common/menu_pico.o platform/common/keyboard.o platform/common/config_file.o
 
 # libpicofe
