@@ -536,55 +536,11 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 				emit_load_imm32(REG_TMP0, (s16)imm);
 				extra_words = 2;
 			}
-		} else if (src_mode == 2) {
-			/* (An) */
-			emit_load_areg(4, src_r);
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
-		} else if (src_mode == 3) {
-			/* (An)+ post-increment */
-			emit_load_areg(4, src_r);
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
-			/* increment An */
-			emit_load_areg(REG_TMP3, src_r);
-			EMIT(MIPS_ADDIU(REG_TMP3, REG_TMP3, op_size == 2 ? 4 : 2));
-			emit_store_areg(src_r, REG_TMP3);
-		} else if (src_mode == 4) {
-			/* -(An) pre-decrement */
-			emit_load_areg(REG_TMP3, src_r);
-			EMIT(MIPS_ADDIU(REG_TMP3, REG_TMP3, op_size == 2 ? -4 : -2));
-			emit_store_areg(src_r, REG_TMP3);
-			EMIT(MIPS_ADDU(4, REG_TMP3, Z0));
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
-		} else if (src_mode == 5) {
-			/* d16(An) */
-			s16 disp = (s16)fetch_68k_word(pc + 2);
-			extra_words = 2;
-			emit_load_areg(4, src_r);
-			EMIT(MIPS_ADDIU(4, 4, disp));
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
-		} else if (src_mode == 7 && src_r == 0) {
-			/* (xxx).W - absolute short */
-			s16 addr = (s16)fetch_68k_word(pc + 2);
-			extra_words = 2;
-			emit_load_imm32(4, (s32)addr);
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
-		} else if (src_mode == 7 && src_r == 1) {
-			/* (xxx).L - absolute long */
-			u32 addr = (fetch_68k_word(pc+2) << 16) | fetch_68k_word(pc+4);
-			extra_words = 4;
-			emit_load_imm32(4, addr);
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
-			return -1;
+			return -1; /* Memory modes disabled - cause FAME crashes */
 		}
 
-		/* Store to destination - only register modes */
+		/* Store to destination - register modes only */
 		if (dst_mode == 0) {
 			/* Dn */
 			if (op_size == 2) {
@@ -601,39 +557,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		} else if (dst_mode == 1) {
 			/* An (MOVEA) - no flags */
 			emit_store_areg(dst_r, REG_TMP0);
-			*cycles_out = (src_mode >= 2) ? 12 : 4;
+			*cycles_out = 4;
 			return 2 + extra_words;
-		} else if (dst_mode == 2) {
-			/* (An) */
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
-		} else if (dst_mode == 3) {
-			/* (An)+ post-increment write */
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
-			emit_load_areg(REG_TMP3, dst_r);
-			EMIT(MIPS_ADDIU(REG_TMP3, REG_TMP3, op_size == 2 ? 4 : 2));
-			emit_store_areg(dst_r, REG_TMP3);
-		} else if (dst_mode == 4) {
-			/* -(An) pre-decrement write */
-			emit_load_areg(REG_TMP3, dst_r);
-			EMIT(MIPS_ADDIU(REG_TMP3, REG_TMP3, op_size == 2 ? -4 : -2));
-			emit_store_areg(dst_r, REG_TMP3);
-			EMIT(MIPS_ADDU(4, REG_TMP3, Z0));
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
-		} else if (dst_mode == 5) {
-			/* d16(An) - displacement write */
-			/* Need extra word for displacement - but it's in MOVE encoding
-			 * which puts dst displacement AFTER src words */
-			s16 disp = (s16)fetch_68k_word(pc + 2 + extra_words);
-			extra_words += 2;
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDIU(4, 4, disp));
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
 		} else {
 			return -1;
 		}
