@@ -1,6 +1,6 @@
 /*
  * PicoDrive N64 - Standalone main with embedded ROM
- * Uses RDP hardware for palette lookup and framebuffer blit
+ * 16-bit renderer + optimized BGR555->RGBA5551 blit
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,35 +21,14 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
-/* RGBA5551 palette for RDP TLUT - aligned for DMA */
-static uint16_t __attribute__((aligned(8))) rdp_palette[256];
-
-
 /* Frame skip */
 static int frame_count = 0;
 #define FRAME_SKIP 1
 
-/* Convert PicoDrive BGR555 palette to N64 RGBA5551 for RDP TLUT */
-static void update_rdp_palette(void)
-{
-	unsigned short *src = Pico.est.HighPal;
-	for (int i = 0; i < 256; i++) {
-		uint16_t c = src[i];
-		uint16_t r = (c      ) & 0x1f;
-		uint16_t g = (c >>  5) & 0x1f;
-		uint16_t b = (c >> 10) & 0x1f;
-		rdp_palette[i] = (r << 11) | (g << 6) | (b << 1) | 1;
-	}
-}
-
-/*
- * Fast CPU blit: 8-bit indexed Draw2FB + palette -> display RGBA5551
- * The palette lookup is just an array index - much cheaper than
- * the 16-bit renderer's per-pixel RGB channel extraction.
- */
+/* BGR555 to RGBA5551 blit (proven working) */
 static void blit_frame(surface_t *fb)
 {
-	unsigned char *src = Pico.est.Draw2FB + 328 * 8 + 8;
+	uint16_t *src = screen_buffer;
 	uint16_t *dst = (uint16_t *)fb->buffer;
 	int h = g_screen_height;
 	int w = g_screen_width;
@@ -59,25 +38,22 @@ static void blit_frame(surface_t *fb)
 		memset(dst, 0, 320 * 240 * 2);
 
 	for (int y = 0; y < h; y++) {
-		unsigned char *s = &src[y * 328];
+		uint16_t *s = &src[y * 320];
 		uint16_t *d = &dst[(y + y_off) * 320];
-		/* 4-pixel unrolled palette lookup */
-		int x;
-		for (x = 0; x + 3 < w; x += 4) {
-			d[x]   = rdp_palette[s[x]];
-			d[x+1] = rdp_palette[s[x+1]];
-			d[x+2] = rdp_palette[s[x+2]];
-			d[x+3] = rdp_palette[s[x+3]];
+		for (int x = 0; x < w; x++) {
+			uint16_t c = s[x];
+			uint16_t r = (c      ) & 0x1f;
+			uint16_t g = (c >>  5) & 0x1f;
+			uint16_t b = (c >> 10) & 0x1f;
+			d[x] = (r << 11) | (g << 6) | (b << 1) | 1;
 		}
-		for (; x < w; x++)
-			d[x] = rdp_palette[s[x]];
 	}
 }
-
 
 int main(int argc, char *argv[])
 {
 	unsigned char *rom_copy;
+
 	g_argv = argv;
 	g_screen_ptr = screen_buffer;
 
@@ -87,7 +63,7 @@ int main(int argc, char *argv[])
 	/* Boot message */
 	console_init();
 	console_set_render_mode(RENDER_MANUAL);
-	printf("\n\n  PicoDrive64 [RDP accelerated]\n\n");
+	printf("\n\n  PicoDrive64\n\n");
 	printf("  ROM: %s (%d KB)\n", EMBEDDED_ROM_NAME, EMBEDDED_ROM_SIZE / 1024);
 	printf("  RAM: %d KB\n", get_memory_size() / 1024);
 	printf("  Initializing...\n");
@@ -96,13 +72,13 @@ int main(int argc, char *argv[])
 	PicoInit();
 
 	/*
-	 * Use 8-bit ALT_RENDERER (fast) + RDP hardware palette blit.
-	 * CPU only runs the emulation; RDP handles all display work.
+	 * 16-bit renderer (proven working, correct colors)
+	 * + all safe performance optimizations
 	 */
 	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG | POPT_EN_FM_DAC;
-	PicoIn.opt |= POPT_ALT_RENDERER;    /* 8-bit fast renderer */
-	PicoIn.opt |= POPT_DIS_VDP_FIFO;    /* skip FIFO timing */
+	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
+	PicoIn.opt |= POPT_DIS_IDLE_DET;
 	PicoIn.sndRate = 11025;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
@@ -123,13 +99,11 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Set up 8-bit renderer - output goes to Pico.est.Draw2FB */
-	PicoDrawSetOutFormat(PDF_NONE, 0);
-
-	/* Also set up 16-bit buffer as fallback */
+	/* 16-bit BGR555 renderer - writes to screen_buffer */
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
 	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
-	printf("  Running! (RDP blit)\n");
+	printf("  Running!\n");
 	console_render();
 	for (volatile int i = 0; i < 2000000; i++) {}
 
@@ -137,21 +111,12 @@ int main(int argc, char *argv[])
 	display_close();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 
-	/* === Main emulation loop === */
+	/* Main loop */
 	for (;;) {
-		/* Run emulation */
 		PicoFrame();
 
-		/* Only render to display every N+1 frames */
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
-
-			/* Update palette if changed */
-			if (Pico.m.dirtyPal) {
-				PicoDrawUpdateHighPal();
-				update_rdp_palette();
-			}
-
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
 				blit_frame(fb);
@@ -159,7 +124,6 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		/* Input every frame */
 		joypad_poll();
 		joypad_buttons_t btns = joypad_get_buttons_pressed(JOYPAD_PORT_1);
 		joypad_inputs_t inputs = joypad_get_inputs(JOYPAD_PORT_1);
