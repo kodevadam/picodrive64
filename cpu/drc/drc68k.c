@@ -874,9 +874,8 @@ static drc68k_block_t *compile_block(u32 addr_68k)
 		insn_count++;
 	}
 
-	if (insn_count < 3) {
-		/* Block too short - overhead of prologue/epilogue exceeds benefit.
-		 * Also reduces risk of flag bugs on short sequences. */
+	if (insn_count < 2) {
+		/* Block too short - prologue/epilogue overhead exceeds benefit. */
 		tcache_ptr = (u32 *)code_start;
 		return NULL;
 	}
@@ -944,8 +943,14 @@ void drc68k_init(void)
 		DRC68K_CACHE_SIZE / 1024, drc68k.cache);
 }
 
+/* Negative cache (defined in drc68k_execute, declared here for reset) */
+#define NEG_CACHE_SIZE 4096
+#define NEG_CACHE_MASK (NEG_CACHE_SIZE - 1)
+static u32 neg_cache[NEG_CACHE_SIZE];
+
 void drc68k_reset(void)
 {
+	memset(neg_cache, 0, sizeof(neg_cache));
 	drc68k.block_count = 0;
 	drc68k.cache_ptr = drc68k.cache;
 	tcache_ptr = (u32 *)drc68k.cache;
@@ -966,7 +971,12 @@ int drc68k_execute(M68K_CONTEXT *ctx, u32 addr, int cycles_max)
 	drc68k_block_t *block = NULL;
 	int cycles_used;
 
-	/* Look up in hash table */
+	/* Check negative cache first — instant reject for known-uncompilable */
+	int nh = (addr >> 1) & NEG_CACHE_MASK;
+	if (neg_cache[nh] == addr)
+		return -1;
+
+	/* Look up in block hash table */
 	s16 idx = drc68k.hash[h];
 	if (idx >= 0 && drc68k.blocks[idx].addr_68k == addr) {
 		block = &drc68k.blocks[idx];
@@ -981,8 +991,10 @@ int drc68k_execute(M68K_CONTEXT *ctx, u32 addr, int cycles_max)
 	}
 
 	if (!block) {
+		/* Remember this address can't be compiled */
+		neg_cache[nh] = addr;
 		drc68k.fallbacks++;
-		return -1; /* fall back to interpreter */
+		return -1;
 	}
 
 	/* Execute the compiled block */
