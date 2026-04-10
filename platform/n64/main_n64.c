@@ -1,5 +1,6 @@
 /*
  * PicoDrive N64 - Standalone main with embedded ROM
+ * Optimized for VR4300 at 93.75 MHz
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,10 +21,50 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
-/* Convert RGB565 to RGBA5551 */
-static inline uint16_t rgb565_to_rgba5551(uint16_t c)
+/* Palette cache for 8-bit renderer */
+static uint16_t pal_cache_rgba[0x100];
+
+/* Frame skip state */
+static int frame_count = 0;
+#define FRAME_SKIP 1  /* render every other frame: 0=none, 1=skip 1, 2=skip 2 */
+
+/* Convert PicoDrive palette (RGB555) to N64 (RGBA5551) - batch */
+static void update_palette_rgba(void)
 {
-	return ((c >> 11) << 11) | (((c >> 6) & 0x1f) << 6) | ((c & 0x1f) << 1) | 1;
+	unsigned short *pal = Pico.est.HighPal;
+	for (int i = 0; i < 0x100; i++) {
+		uint16_t c = pal[i];
+		/* RGB555: 0RRRRRGG GGGBBBBB -> RGBA5551: RRRRRGGG GGBBBBBA */
+		pal_cache_rgba[i] = (c << 1) | 1;
+	}
+}
+
+/* Fast 8-bit to RGBA5551 blit using cached palette */
+static void blit_8bit_to_display(surface_t *fb)
+{
+	unsigned char *src = Pico.est.Draw2FB + 328 * 8 + 8;
+	uint16_t *dst = (uint16_t *)fb->buffer;
+	int h = g_screen_height;
+	int w = g_screen_width;
+	int y_off = (240 - h) / 2;
+
+	if (y_off > 0)
+		memset(dst, 0, 320 * 240 * 2);
+
+	for (int y = 0; y < h; y++) {
+		uint16_t *d = &dst[(y + y_off) * 320];
+		unsigned char *s = &src[y * 328];
+		/* Unrolled 4-pixel inner loop */
+		int x;
+		for (x = 0; x + 3 < w; x += 4) {
+			d[x]   = pal_cache_rgba[s[x]];
+			d[x+1] = pal_cache_rgba[s[x+1]];
+			d[x+2] = pal_cache_rgba[s[x+2]];
+			d[x+3] = pal_cache_rgba[s[x+3]];
+		}
+		for (; x < w; x++)
+			d[x] = pal_cache_rgba[s[x]];
+	}
 }
 
 int main(int argc, char *argv[])
@@ -33,35 +74,36 @@ int main(int argc, char *argv[])
 	g_argv = argv;
 	g_screen_ptr = screen_buffer;
 
-	/* Expansion Pak (8 MB) required - BSS alone is ~1.5 MB.
-	 * In ares: Nintendo 64 > "Homebrew Mode" must be ON
-	 *          Nintendo 64 > "Expansion Pak" must be ON */
-
+	/* Expansion Pak (8 MB) required */
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
 
-	/* Show boot message via console */
+	/* Show boot message */
 	console_init();
 	console_set_render_mode(RENDER_MANUAL);
 	printf("\n\n");
-	printf("  ================================\n");
-	printf("  PicoDrive64\n");
-	printf("  ================================\n\n");
-	printf("  ROM: %s\n", EMBEDDED_ROM_NAME);
-	printf("  Size: %d bytes\n", EMBEDDED_ROM_SIZE);
+	printf("  PicoDrive64\n\n");
+	printf("  ROM: %s (%d KB)\n", EMBEDDED_ROM_NAME, EMBEDDED_ROM_SIZE / 1024);
 	printf("  RAM: %d KB\n\n", get_memory_size() / 1024);
-	printf("  Initializing emulator...\n");
+	printf("  Initializing...\n");
 	console_render();
 
 	/* Init PicoDrive core */
 	PicoInit();
 
-	PicoIn.opt = POPT_EN_FM | POPT_EN_PSG | POPT_EN_STEREO | POPT_EN_FM_DAC;
-	/* Use 16-bit accurate renderer - writes directly to our buffer */
-	PicoIn.sndRate = 22050;
-
-	printf("  Allocating ROM buffer...\n");
-	console_render();
+	/*
+	 * Performance tuning for 93.75 MHz VR4300:
+	 * - ALT_RENDERER: fast 8-bit renderer (much less CPU than 16-bit accurate)
+	 * - Disable FM DAC: saves significant CPU in YM2612
+	 * - Disable stereo: halves audio mixing work
+	 * - Disable sound filter: saves CPU
+	 * - 11025 Hz audio: quarter the mixing work vs 44100
+	 * - Disable idle detection: small overhead but causes issues on some games
+	 */
+	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG;
+	PicoIn.opt |= POPT_ALT_RENDERER;
+	PicoIn.opt |= POPT_DIS_VDP_FIFO;    /* skip FIFO timing for speed */
+	PicoIn.sndRate = 11025;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
 	if (!rom_copy) {
@@ -71,62 +113,49 @@ int main(int argc, char *argv[])
 	}
 	memcpy(rom_copy, embedded_rom_data, EMBEDDED_ROM_SIZE);
 
-	printf("  Inserting cartridge...\n");
-	console_render();
-
 	if (PicoCartInsert(rom_copy, EMBEDDED_ROM_SIZE, NULL)) {
 		printf("  ERROR: PicoCartInsert failed!\n");
 		console_render();
 		for (;;) {}
 	}
 
-	printf("  Powering on...\n");
-	console_render();
-
 	PicoPower();
 	PicoReset();
 	PicoLoopPrepare();
 
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
+	/* 8-bit alt renderer: output goes to Pico.est.Draw2FB, not screen_buffer */
+	PicoDrawSetOutFormat(PDF_NONE, 0);
 
-	printf("  Starting emulation!\n");
+	printf("  Running!\n");
 	console_render();
 
-	/* Brief pause to see messages */
-	for (volatile int i = 0; i < 3000000; i++) {}
+	for (volatile int i = 0; i < 2000000; i++) {}
 
-	/* Tear down console and reinitialize display for framebuffer mode */
+	/* Reinit display for framebuffer mode */
 	console_close();
 	display_close();
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 
-	/* Emulation loop */
+	/* === Main emulation loop === */
 	for (;;) {
+		/* Always run emulation (for game logic / audio) */
 		PicoFrame();
 
-		/* Blit to display */
-		surface_t *fb = display_get();
-		if (fb && fb->buffer) {
-			uint16_t *src = screen_buffer;
-			uint16_t *dst = (uint16_t *)fb->buffer;
-			int h = g_screen_height;
-			int w = g_screen_width;
-			int y_off = (240 - h) / 2;
+		/* Only render to display every N+1 frames */
+		if (++frame_count > FRAME_SKIP) {
+			frame_count = 0;
 
-			if (y_off > 0)
-				memset(dst, 0, 320 * 240 * 2);
+			if (Pico.m.dirtyPal)
+				update_palette_rgba();
 
-			for (int y = 0; y < h; y++) {
-				uint16_t *s = &src[y * 320];
-				uint16_t *d = &dst[(y + y_off) * 320];
-				for (int x = 0; x < w; x++)
-					d[x] = rgb565_to_rgba5551(s[x]);
+			surface_t *fb = display_get();
+			if (fb && fb->buffer) {
+				blit_8bit_to_display(fb);
+				display_show(fb);
 			}
-			display_show(fb);
 		}
 
-		/* Read input */
+		/* Read input (every frame for responsiveness) */
 		joypad_poll();
 		joypad_buttons_t btns = joypad_get_buttons_pressed(JOYPAD_PORT_1);
 		joypad_inputs_t inputs = joypad_get_inputs(JOYPAD_PORT_1);
