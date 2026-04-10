@@ -53,6 +53,58 @@ sd:/
 
 ---
 
+## Performance Status
+
+**Baseline measurement** (Tier 1 optimizations applied):
+- 23 FPS in-game (Gley Lancer, active gameplay)
+- Target: 60 FPS (NTSC)
+- Gap: 2.6x
+
+**Configuration**: No sound, Z80 disabled, frame skip 2, VDP FIFO off,
+sprite limit off, `-O3 -fomit-frame-pointer -funroll-loops -finline-limit=300`,
+BGR555→RGBA5551 LUT blit.
+
+**Diagnosis**: Interpreter optimization is effectively exhausted. The remaining
+2.6x gap requires a 68k dynamic recompiler. The FAME C interpreter runs ~12
+host cycles per guest 68k cycle; a dynarec targets ~1-2.
+
+## 68k MIPS Dynarec Plan
+
+PicoDrive provides useful MIPS codegen infrastructure (`cpu/drc/emit_mips.c`)
+and DRC patterns (`cpu/sh2/compiler.c`), but the 68k frontend, flags
+correctness, memory integration, and cache/invalidation logic still need to
+be built.
+
+### Phase 1: Minimal hybrid dynarec
+- Build basic block compiler for limited opcode subset (MOVE, ADD, SUB,
+  CMP, Bcc, LEA, CLR, AND, OR — covers ~60% of typical 68k code)
+- Fall back to interpreter for all unsupported opcodes
+- Use `emit_mips.c` for MIPS III code generation
+- Block cache with simple address→code mapping
+
+### Phase 2: Correctness validation
+- Run test ROM suite (68k instruction tests)
+- Compare register state between dynarec and interpreter paths
+- Fix flag computation bugs (CCR N/Z/V/C for each compiled op)
+
+### Phase 3: Measure and profile
+- Block hit rate (% of cycles in compiled vs interpreted code)
+- Per-opcode frequency analysis to prioritize coverage
+- Cache efficiency on VR4300 (16KB I$, 8KB D$)
+
+### Phase 4: Expand and optimize
+- Add remaining common opcodes based on profiling
+- Block linking (direct jumps between compiled blocks)
+- Static register allocation for 68k D0-D7/A0-A7
+- Memory access fast paths (ROM reads, RAM read/write)
+
+### Phase 5: Polish
+- Self-modifying code detection and invalidation
+- Cycle counting accuracy
+- Re-enable sound (with RSP audio mixing if CPU budget allows)
+
+---
+
 ## Porting Plan
 
 ### Overview
