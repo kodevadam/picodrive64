@@ -24,6 +24,9 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 /* RGBA5551 palette for RDP TLUT - aligned for DMA */
 static uint16_t __attribute__((aligned(8))) rdp_palette[256];
 
+/* Aligned 8-bit framebuffer for RDP (320 stride, no borders) */
+static uint8_t __attribute__((aligned(16))) rdp_framebuf[320 * 240];
+
 /* Frame skip */
 static int frame_count = 0;
 #define FRAME_SKIP 1
@@ -47,37 +50,36 @@ static void rdp_blit_frame(surface_t *fb)
 	unsigned char *draw2fb = Pico.est.Draw2FB;
 	int h = g_screen_height;
 	int w = g_screen_width;
-	int stride = 328; /* Draw2FB stride (LINE_WIDTH in draw2.c) */
 	int y_off = (240 - h) / 2;
-	unsigned char *pixels = draw2fb + stride * 8 + 8; /* skip 8-line/8-pixel border */
 
-	/* Flush CPU data cache so RDP can DMA the pixel data */
-	data_cache_hit_writeback(pixels, stride * h);
+	/* Copy Draw2FB (328 stride, 8px border) to aligned buffer (320 stride) */
+	unsigned char *src = draw2fb + 328 * 8 + 8;
+	for (int y = 0; y < h; y++)
+		memcpy(&rdp_framebuf[y * 320], &src[y * 328], w);
 
-	/* Create a surface wrapping PicoDrive's 8-bit framebuffer */
-	surface_t emu_surf = surface_make(pixels, FMT_CI8, w, h, stride);
+	/* Flush the aligned buffer to RDRAM for RDP DMA */
+	data_cache_hit_writeback(rdp_framebuf, 320 * h);
 
-	/* Attach RDP to the display framebuffer */
+	/* Create surface from aligned buffer */
+	surface_t emu_surf = surface_make_linear(rdp_framebuf, FMT_CI8, w, h);
+
+	/* Attach RDP to display */
 	rdpq_attach(fb, NULL);
 
-	/* Clear if there are vertical borders */
 	if (y_off > 0) {
 		rdpq_set_mode_fill(RGBA32(0, 0, 0, 255));
 		rdpq_fill_rectangle(0, 0, 320, y_off);
 		rdpq_fill_rectangle(0, 240 - y_off, 320, 240);
 	}
 
-	/* Upload palette to RDP TLUT */
+	/* Upload palette + set mode */
 	rdpq_tex_upload_tlut(rdp_palette, 0, 256);
-
-	/* Set copy mode with palette lookup - fastest for 1:1 blit */
-	rdpq_set_mode_copy(false);
+	rdpq_set_mode_standard();
 	rdpq_mode_tlut(TLUT_RGBA16);
 
-	/* Blit the 8-bit texture - RDP does palette lookup in hardware */
+	/* Blit - RDP does palette lookup in hardware */
 	rdpq_tex_blit(&emu_surf, 0, y_off, NULL);
 
-	/* Detach and show */
 	rdpq_detach_show();
 }
 
