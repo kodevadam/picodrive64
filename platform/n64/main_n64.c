@@ -34,8 +34,8 @@ int main(int argc, char *argv[])
 	g_screen_ptr = screen_buffer;
 
 	/* Expansion Pak (8 MB) required - BSS alone is ~1.5 MB.
-	 * In ares: Nintendo 64 > Expansion Pak must be checked.
-	 * On real hardware: Expansion Pak must be inserted. */
+	 * In ares: Nintendo 64 > "Homebrew Mode" must be ON
+	 *          Nintendo 64 > "Expansion Pak" must be ON */
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
 
