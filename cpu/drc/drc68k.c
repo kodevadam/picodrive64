@@ -513,6 +513,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_update_nz_long(REG_TMP2);
 			/* C = carry, X = carry (simplified: use SLTU) */
 			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP2, REG_TMP0));
+			EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_X, REG_CTX));
 			/* V = overflow (simplified) */
@@ -539,6 +540,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_update_nz_long(REG_TMP2);
 			/* C = borrow */
 			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP1, REG_TMP0));
+			EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_X, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
@@ -563,6 +565,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			/* Don't store result - just set flags */
 			emit_update_nz_long(REG_TMP2);
 			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP1, REG_TMP0));
+			EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
 			*cycles_out = 6;
@@ -722,6 +725,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_dreg(ea_reg, REG_TMP1);
 			emit_update_nz_long(REG_TMP1);
 			EMIT(MIPS_SLTU(REG_TMP2, REG_TMP1, REG_TMP0));
+			EMIT(MIPS_SLL(REG_TMP2, REG_TMP2, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_X, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
@@ -736,6 +740,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_update_nz_long(REG_TMP1);
 			emit_load_imm32(REG_TMP2, data);
 			EMIT(MIPS_SLTU(REG_TMP2, REG_TMP0, REG_TMP2));
+			EMIT(MIPS_SLL(REG_TMP2, REG_TMP2, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_X, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
@@ -788,7 +793,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
 		if (cond == 1) {
-			/* BSR */
+			/* BSR - too complex for now */
 			return -1;
 		}
 
@@ -910,6 +915,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_dreg(ea_reg, REG_TMP2);
 			emit_update_nz_long(REG_TMP2);
 			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP0, REG_TMP1));
+			EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_X, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
@@ -922,6 +928,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_dreg(ea_reg, REG_TMP2);
 			emit_update_nz_long(REG_TMP2);
 			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP2, REG_TMP0));
+			EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_X, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
@@ -933,6 +940,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			EMIT(MIPS_SUBU(REG_TMP2, REG_TMP0, REG_TMP1));
 			emit_update_nz_long(REG_TMP2);
 			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP0, REG_TMP1));
+			EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 8)); /* FAME: carry at bit 8 */
 			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
 			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
 			*cycles_out = 14;
@@ -990,6 +998,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		else
 			EMIT(MIPS_SRL(REG_TMP2, REG_TMP0, count - 1));
 		EMIT(MIPS_ANDI(REG_TMP2, REG_TMP2, 1));
+			EMIT(MIPS_SLL(REG_TMP2, REG_TMP2, 8)); /* FAME: carry at bit 8 */
 		EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
 		EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_X, REG_CTX));
 		EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
