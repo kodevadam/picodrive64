@@ -157,8 +157,13 @@ DEFINES += _USE_CZ80
 SRCS_COMMON += $(R)cpu/cz80/cz80.c
 endif
 
-# --- SH2 ---
+# --- DRC ---
 SRCS_COMMON += $(R)cpu/drc/cmn.c
+ifeq "$(DRC_68K)" "1"
+SRCS_COMMON += $(R)cpu/drc/drc68k.c
+endif
+
+# --- SH2 ---
 ifneq "$(no_32x)" "1"
 SRCS_COMMON += $(R)cpu/sh2/sh2.c
 #

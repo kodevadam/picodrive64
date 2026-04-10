@@ -7,6 +7,10 @@
  * See COPYING file in the top-level directory.
  */
 
+#ifdef DRC_68K
+#include "../cpu/drc/drc68k.h"
+#endif
+
 #define CYCLES_M68K_LINE     488 // suitable for both PAL/NTSC
 #define CYCLES_M68K_VINT_LAG 112
 
@@ -34,7 +38,19 @@ static void SekExecM68k(int cyc_do)
 #elif defined(EMU_M68K)
   Pico.t.m68c_cnt += m68k_execute(cyc_do) - cyc_do;
 #elif defined(EMU_F68K)
+#ifdef DRC_68K
+  {
+    /* Try DRC first, fall back to FAME if block can't be compiled */
+    int drc_cycles = drc68k_execute(&PicoCpuFM68k, PicoCpuFM68k.pc, cyc_do);
+    if (drc_cycles >= 0) {
+      Pico.t.m68c_cnt += drc_cycles - cyc_do;
+    } else {
+      Pico.t.m68c_cnt += fm68k_emulate(&PicoCpuFM68k, cyc_do, 0) - cyc_do;
+    }
+  }
+#else
   Pico.t.m68c_cnt += fm68k_emulate(&PicoCpuFM68k, cyc_do, 0) - cyc_do;
+#endif
 #endif
   SekCyclesLeft = 0;
 }
