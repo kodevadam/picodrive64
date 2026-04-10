@@ -804,8 +804,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			*cycles_out = 10;
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
-		if (cond != 0) {
-			/* Conditional branches disabled - flag evaluation buggy */
+		if (cond == 1) {
+			/* BSR too complex for now */
 			return -1;
 		}
 
@@ -838,39 +838,39 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		/* Always use LUI+ORI for taken_pc to ensure fixed 2-insn size */
 		switch (cond) {
 		case 4: /* BCC (carry clear) - branch if C==0 */
-			EMIT(MIPS_BNE(REG_TMP2, Z0, 2));
+			EMIT(MIPS_BNE(REG_TMP2, Z0, 3));
 			EMIT(MIPS_NOP);
 			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
 			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
 		case 5: /* BCS (carry set) - branch if C!=0 */
-			EMIT(MIPS_BEQ(REG_TMP2, Z0, 2));
+			EMIT(MIPS_BEQ(REG_TMP2, Z0, 3));
 			EMIT(MIPS_NOP);
 			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
 			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
 		case 6: /* BNE (not equal) - branch if Z clear (NotZ != 0) */
-			EMIT(MIPS_BEQ(REG_TMP0, Z0, 2));
+			EMIT(MIPS_BEQ(REG_TMP0, Z0, 3));
 			EMIT(MIPS_NOP);
 			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
 			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
 		case 7: /* BEQ (equal) - branch if Z set (NotZ == 0) */
-			EMIT(MIPS_BNE(REG_TMP0, Z0, 2));
+			EMIT(MIPS_BNE(REG_TMP0, Z0, 3));
 			EMIT(MIPS_NOP);
 			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
 			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
 		case 10: /* BPL (plus) - branch if N clear (bit 31 == 0) */
 			EMIT(MIPS_SRL(REG_TMP1, REG_TMP1, 31));
-			EMIT(MIPS_BNE(REG_TMP1, Z0, 2));
+			EMIT(MIPS_BNE(REG_TMP1, Z0, 3));
 			EMIT(MIPS_NOP);
 			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
 			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
 		case 11: /* BMI (minus) - branch if N set (bit 31 == 1) */
 			EMIT(MIPS_SRL(REG_TMP1, REG_TMP1, 31));
-			EMIT(MIPS_BEQ(REG_TMP1, Z0, 2));
+			EMIT(MIPS_BEQ(REG_TMP1, Z0, 3));
 			EMIT(MIPS_NOP);
 			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
 			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
