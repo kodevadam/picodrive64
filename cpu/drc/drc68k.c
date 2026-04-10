@@ -737,6 +737,14 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_load_areg(4, src_r);
 			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
 			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 5) {
+			/* d16(An) - displacement read */
+			s16 disp = (s16)fetch_68k_word(pc + 2);
+			extra_words = 2;
+			emit_load_areg(4, src_r);
+			EMIT(MIPS_ADDIU(4, 4, disp));
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
 			return -1;
 		}
