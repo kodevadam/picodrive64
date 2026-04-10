@@ -231,6 +231,100 @@ static void emit_set_carry_from_sltu(int sltu_reg)
 static void emit_load_imm32(int reg, u32 val);
 
 /*
+ * C-callable fast memory access wrappers.
+ * Called via JALR from DRC code. These do the map lookup in C
+ * (no JIT code generation for the map check) but are still faster
+ * than FAME's m68k_read16 because they skip FAME's internal overhead.
+ *
+ * These are NOT static because they're called from generated code.
+ */
+u32 drc_read16(u32 a)
+{
+	a &= 0x00fffffe;
+	uptr v = m68k_read16_map[a >> M68K_MEM_SHIFT];
+	if (v & MAP_FLAG)
+		return ((cpu68k_read_f *)(v << 1))(a);
+	return *(u16 *)((v << 1) + a);
+}
+
+u32 drc_read32(u32 a)
+{
+	a &= 0x00fffffc;
+	u32 hi = drc_read16(a);
+	u32 lo = drc_read16(a + 2);
+	return (hi << 16) | lo;
+}
+
+void drc_write16(u32 a, u32 d)
+{
+	a &= 0x00fffffe;
+	uptr v = m68k_write16_map[a >> M68K_MEM_SHIFT];
+	if (v & MAP_FLAG)
+		((cpu68k_write_f *)(v << 1))(a, d);
+	else
+		*(u16 *)((v << 1) + a) = d;
+}
+
+void drc_write32(u32 a, u32 d)
+{
+	drc_write16(a, d >> 16);
+	drc_write16(a + 2, d & 0xffff);
+}
+
+/* Emit: call drc_read16. a0 = address. Result in v0. */
+static void emit_drc_read16(void)
+{
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)drc_read16);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+}
+
+static void emit_drc_read32(void)
+{
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)drc_read32);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+}
+
+static void emit_drc_write16(void)
+{
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)drc_write16);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+}
+
+static void emit_drc_write32(void)
+{
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)drc_write32);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+}
+
+/*
  * Safe memory access via PicoDrive's top-level functions.
  * Calls m68k_read16/read32/write16/write32 which handle the
  * memory map lookup internally. Input: a0=addr, a1=data(writes).
@@ -735,7 +829,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		} else if (src_mode == 2) {
 			/* (An) - simplest memory read */
 			emit_load_areg(4, src_r);
-			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			if (op_size == 2) emit_drc_read32(); else emit_drc_read16();
 			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else if (src_mode == 5) {
 			/* d16(An) - displacement read */
@@ -743,7 +837,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			extra_words = 2;
 			emit_load_areg(4, src_r);
 			EMIT(MIPS_ADDIU(4, 4, disp));
-			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			if (op_size == 2) emit_drc_read32(); else emit_drc_read16();
 			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
 			return -1;
@@ -771,8 +865,21 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_areg(dst_r, REG_TMP0);
 			*cycles_out = 4;
 			return 2 + extra_words;
+		} else if (dst_mode == 2) {
+			/* (An) write */
+			emit_load_areg(4, dst_r);
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_drc_write32(); else emit_drc_write16();
+		} else if (dst_mode == 5) {
+			/* d16(An) write */
+			s16 disp = (s16)fetch_68k_word(pc + 2 + extra_words);
+			extra_words += 2;
+			emit_load_areg(4, dst_r);
+			EMIT(MIPS_ADDIU(4, 4, disp));
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_drc_write32(); else emit_drc_write16();
 		} else {
-			return -1; /* writes disabled - eventual crash in FAME */
+			return -1;
 		}
 
 		emit_update_nz_long(REG_TMP0);
