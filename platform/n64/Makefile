@@ -1,58 +1,46 @@
-# PicoDrive N64 platform - libdragon build integration
+# PicoDrive N64 - ROM build rules
 #
-# This Makefile is used to produce the final .z64 ROM image.
-# It expects the PicoDrive ELF binary to already be built by the
-# main Makefile with --platform=n64.
+# Usage (from project root, after ./configure --platform=n64 && make):
+#   make -C platform/n64 rom
 #
-# Prerequisites:
-#   - libdragon SDK installed
-#   - N64_INST environment variable pointing to libdragon install
-#     (default: /opt/libdragon)
-#
-# Build steps:
-#   1. ./configure --platform=n64
-#   2. make
-#   3. make -C platform/n64 rom
-#
-# The output is PicoDrive64.z64, ready to flash to SummerCart64 SD card.
+# For embedded ROM builds:
+#   make N64_EMBEDDED_ROM=1
+#   make -C platform/n64 rom
 
 N64_INST ?= /opt/libdragon
 
 ROM_NAME = PicoDrive64
 ROM_TITLE = "PicoDrive64"
-ROM_SAVETYPE = none
-ROM_REGIONFREE = true
 
-# Path to PicoDrive ELF built by main Makefile
 PICODRIVE_ELF ?= ../../picodrive
 
-# libdragon tools
 N64TOOL = $(N64_INST)/bin/n64tool
-CHKSUM64 = $(N64_INST)/bin/chksum64
-MKDFS = $(N64_INST)/bin/mkdfs
+N64SYM = $(N64_INST)/bin/n64sym
+N64ELFCOMPRESS = $(N64_INST)/bin/n64elfcompress
+N64STRIP = $(N64_INST)/bin/mips64-elf-strip
 
 .PHONY: rom clean
 
 rom: $(ROM_NAME).z64
 
-# Create the .z64 ROM image from ELF
 $(ROM_NAME).z64: $(PICODRIVE_ELF)
-	@echo "Building N64 ROM: $@"
-	$(N64_INST)/bin/mips64-elf-objcopy -O binary $(PICODRIVE_ELF) $(ROM_NAME).bin
-	@# Pad to 1MB minimum for N64 boot
-	@truncate -s '>1M' $(ROM_NAME).bin 2>/dev/null || true
-	$(N64TOOL) \
-		--title $(ROM_TITLE) \
-		--output $@ \
-		$(ROM_NAME).bin
-	$(CHKSUM64) $@
-	@echo "ROM built: $@ ($(shell stat -c%s $@ 2>/dev/null || echo '?') bytes)"
+	@echo "=== Building N64 ROM: $@ ==="
+	$(N64SYM) $(PICODRIVE_ELF) $(PICODRIVE_ELF).sym
+	cp $(PICODRIVE_ELF) $(PICODRIVE_ELF).stripped
+	$(N64STRIP) -s $(PICODRIVE_ELF).stripped
+	$(N64ELFCOMPRESS) -o $(dir $(PICODRIVE_ELF)) -c 1 $(PICODRIVE_ELF).stripped
+	$(N64TOOL) --title $(ROM_TITLE) --toc --output $@ \
+		--align 256 $(PICODRIVE_ELF).stripped \
+		--align 8 $(PICODRIVE_ELF).sym
+	@rm -f $(PICODRIVE_ELF).stripped $(PICODRIVE_ELF).sym
+	@echo ""
+	@echo "ROM built: $@ ($$(stat -c%s $@ 2>/dev/null || echo '?') bytes)"
 	@echo ""
 	@echo "To use with SummerCart64:"
 	@echo "  1. Copy $@ to your SD card"
 	@echo "  2. Create sd:/picodrive/roms/ and put Genesis ROMs there"
-	@echo "  3. Create sd:/picodrive/saves/ for save states"
 	@echo ""
+	@echo "To test in ares:  ares $@"
 
 clean:
-	rm -f $(ROM_NAME).z64 $(ROM_NAME).bin $(ROM_NAME).dfs
+	rm -f $(ROM_NAME).z64 $(PICODRIVE_ELF).stripped $(PICODRIVE_ELF).sym
