@@ -21,11 +21,24 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
-/* Frame skip */
+/* Frame skip: 0=none, 1=skip 1, 2=skip 2 */
 static int frame_count = 0;
-#define FRAME_SKIP 1
+#define FRAME_SKIP 2
 
-/* BGR555 to RGBA5551 blit (proven working) */
+/* Precomputed BGR555 -> RGBA5551 lookup table (32768 entries = 64KB) */
+static uint16_t bgr555_to_rgba5551[32768];
+
+static void init_color_lut(void)
+{
+	for (int i = 0; i < 32768; i++) {
+		uint16_t r = (i      ) & 0x1f;
+		uint16_t g = (i >>  5) & 0x1f;
+		uint16_t b = (i >> 10) & 0x1f;
+		bgr555_to_rgba5551[i] = (r << 11) | (g << 6) | (b << 1) | 1;
+	}
+}
+
+/* Fast blit using LUT - one table lookup per pixel, no math */
 static void blit_frame(surface_t *fb)
 {
 	uint16_t *src = screen_buffer;
@@ -40,12 +53,11 @@ static void blit_frame(surface_t *fb)
 	for (int y = 0; y < h; y++) {
 		uint16_t *s = &src[y * 320];
 		uint16_t *d = &dst[(y + y_off) * 320];
-		for (int x = 0; x < w; x++) {
-			uint16_t c = s[x];
-			uint16_t r = (c      ) & 0x1f;
-			uint16_t g = (c >>  5) & 0x1f;
-			uint16_t b = (c >> 10) & 0x1f;
-			d[x] = (r << 11) | (g << 6) | (b << 1) | 1;
+		for (int x = 0; x < w; x += 4) {
+			d[x]   = bgr555_to_rgba5551[s[x]   & 0x7fff];
+			d[x+1] = bgr555_to_rgba5551[s[x+1] & 0x7fff];
+			d[x+2] = bgr555_to_rgba5551[s[x+2] & 0x7fff];
+			d[x+3] = bgr555_to_rgba5551[s[x+3] & 0x7fff];
 		}
 	}
 }
@@ -70,16 +82,17 @@ int main(int argc, char *argv[])
 	console_render();
 
 	PicoInit();
+	init_color_lut();
 
 	/*
 	 * 16-bit renderer (proven working, correct colors)
 	 * + all safe performance optimizations
 	 */
-	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG | POPT_EN_FM_DAC;
+	PicoIn.opt  = 0;                     /* no sound = massive CPU savings */
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
-	PicoIn.sndRate = 11025;
+	PicoIn.sndRate = 0;                  /* disable audio entirely */
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
 	if (!rom_copy) {
