@@ -38,6 +38,7 @@ int main(int argc, char *argv[])
 	 *          Nintendo 64 > "Expansion Pak" must be ON */
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+	joypad_init();
 
 	/* Show boot message via console */
 	console_init();
