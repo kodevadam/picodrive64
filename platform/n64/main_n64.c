@@ -24,8 +24,9 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 /* RGBA5551 palette for RDP TLUT - aligned for DMA */
 static uint16_t __attribute__((aligned(8))) rdp_palette[256];
 
-/* Aligned 8-bit framebuffer for RDP - must be 8-byte aligned, use width as stride */
-static uint8_t __attribute__((aligned(16))) rdp_framebuf[320 * 240];
+/* RDP-compatible RGBA5551 surface - allocated by surface_alloc */
+static surface_t rdp_surface;
+static int rdp_surface_inited = 0;
 
 /* Frame skip */
 static int frame_count = 0;
@@ -44,10 +45,16 @@ static void update_rdp_palette(void)
 	}
 }
 
-static surface_t rdp_surface;
-static int rdp_surface_inited = 0;
-
-/* Blit using RDP: upload CI8 texture strips + TLUT palette */
+/*
+ * RDP-accelerated blit:
+ * 1. CPU: palette lookup 8-bit -> RGBA5551 (cheap, just array index)
+ * 2. CPU: cache writeback
+ * 3. RDP: blit RGBA16 surface to display (hardware DMA, no CPU copy)
+ *
+ * This avoids CI8+TLUT TMEM complexity. The palette lookup is fast
+ * (256-entry LUT, ~70K pixels) and the RDP blit frees the CPU from
+ * the actual framebuffer transfer.
+ */
 static void rdp_blit_frame(surface_t *fb)
 {
 	unsigned char *src = Pico.est.Draw2FB + 328 * 8 + 8;
@@ -55,22 +62,26 @@ static void rdp_blit_frame(surface_t *fb)
 	int w = g_screen_width;
 	int y_off = (240 - h) / 2;
 
-	/* Allocate RDP-compatible surface once */
+	/* Alloc RGBA16 surface once (RDP-compatible alignment) */
 	if (!rdp_surface_inited) {
-		rdp_surface = surface_alloc(FMT_CI8, w, h);
+		rdp_surface = surface_alloc(FMT_RGBA16, w, h);
 		rdp_surface_inited = 1;
 	}
 
-	/* Copy pixels to RDP surface (proper stride/alignment) */
-	uint8_t *dst = (uint8_t *)rdp_surface.buffer;
-	int dst_stride = rdp_surface.stride;
-	for (int y = 0; y < h; y++)
-		memcpy(&dst[y * dst_stride], &src[y * 328], w);
+	/* CPU: fast palette lookup (8-bit indexed -> RGBA5551) */
+	uint16_t *dst = (uint16_t *)rdp_surface.buffer;
+	int dst_stride = rdp_surface.stride / 2; /* stride in pixels */
+	for (int y = 0; y < h; y++) {
+		unsigned char *s = &src[y * 328];
+		uint16_t *d = &dst[y * dst_stride];
+		for (int x = 0; x < w; x++)
+			d[x] = rdp_palette[s[x]];
+	}
 
-	/* Flush to RDRAM */
-	data_cache_hit_writeback(dst, dst_stride * h);
+	/* Flush to RDRAM for RDP DMA */
+	data_cache_hit_writeback(rdp_surface.buffer, rdp_surface.stride * h);
 
-	/* Attach RDP to display */
+	/* RDP: blit to display framebuffer */
 	rdpq_attach(fb, NULL);
 
 	if (y_off > 0) {
@@ -79,10 +90,7 @@ static void rdp_blit_frame(surface_t *fb)
 		rdpq_fill_rectangle(0, 240 - y_off, 320, 240);
 	}
 
-	/* Upload palette and blit */
-	rdpq_tex_upload_tlut(rdp_palette, 0, 256);
-	rdpq_set_mode_standard();
-	rdpq_mode_tlut(TLUT_RGBA16);
+	rdpq_set_mode_copy(false);
 	rdpq_tex_blit(&rdp_surface, 0, y_off, NULL);
 
 	rdpq_detach_show();
