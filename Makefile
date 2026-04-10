@@ -260,7 +260,8 @@ USE_FRONTEND = 1
 endif
 ifeq "$(PLATFORM)" "n64"
 # Nintendo 64 via libdragon (targets SummerCart64)
-CFLAGS += -DN64
+# USE_BGR555 matches PS2 (also big-endian MIPS) - forces 5-5-5 color output
+CFLAGS += -DN64 -DUSE_BGR555
 # Disable features that won't fit in N64 RAM
 no_32x = 1
 no_sms = 0

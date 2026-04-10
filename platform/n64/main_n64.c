@@ -25,14 +25,10 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 static int frame_count = 0;
 #define FRAME_SKIP 1
 
-/* RGB555 to RGBA5551 conversion
- * PicoDrive RGB555: 0RRRRRGG GGGBBBBB  (bit 15 unused)
- * N64 RGBA5551:     RRRRRGGG GGBBBBBA
- *
- * R stays at bits 11-15, G stays at 6-10, B stays at 1-5, A=1 at bit 0
- * This is literally (c << 1) | 1... but PicoDrive actually outputs
- * BGR555 on big-endian: 0BBBBBGG GGGRRRRR
- * So we need to swap R and B channels.
+/* BGR555 to RGBA5551 conversion
+ * PicoDrive with USE_BGR555: 0BBBBBGGGGGRRRRR
+ * N64 RGBA5551:              RRRRRGGGGGBBBBBA
+ * R=bits 0-4, G=bits 5-9, B=bits 10-14 of source
  */
 static void blit_to_display(surface_t *fb)
 {
@@ -50,9 +46,11 @@ static void blit_to_display(surface_t *fb)
 		uint16_t *d = &dst[(y + y_off) * 320];
 		for (int x = 0; x < w; x++) {
 			uint16_t c = s[x];
-			uint16_t r = (c >> 10) & 0x1f;
-			uint16_t g = (c >>  5) & 0x1f;
-			uint16_t b = (c      ) & 0x1f;
+			/* Extract from BGR555 */
+			uint16_t r = (c      ) & 0x1f;  /* bits 0-4 */
+			uint16_t g = (c >>  5) & 0x1f;  /* bits 5-9 */
+			uint16_t b = (c >> 10) & 0x1f;  /* bits 10-14 */
+			/* Pack as RGBA5551 */
 			d[x] = (r << 11) | (g << 6) | (b << 1) | 1;
 		}
 	}
