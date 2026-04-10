@@ -62,6 +62,44 @@ static u32 *tcache_ptr;
 #define SP 29
 #define LR 31
 
+/* ======== Branch Offset Helper ======== */
+/*
+ * Safe forward branch pattern:
+ *   u32 *patch = emit_branch_placeholder(BNE, rs, rt);
+ *   ... emit instructions to skip ...
+ *   patch_branch(patch);
+ *
+ * This eliminates hand-counted offsets entirely.
+ * MIPS branch: target = (PC_of_branch + 4) + (offset * 4)
+ * So: offset = (target_addr - (branch_addr + 4)) / 4
+ */
+
+/* Emit a branch with offset=0 (placeholder). Returns pointer to patch. */
+static u32 *emit_branch_placeholder_beq(int rs, int rt)
+{
+	u32 *p = tcache_ptr;
+	EMIT(MIPS_BEQ(rs, rt, 0));
+	EMIT(MIPS_NOP); /* delay slot */
+	return p;
+}
+
+static u32 *emit_branch_placeholder_bne(int rs, int rt)
+{
+	u32 *p = tcache_ptr;
+	EMIT(MIPS_BNE(rs, rt, 0));
+	EMIT(MIPS_NOP);
+	return p;
+}
+
+/* Patch a branch placeholder to jump to current tcache_ptr position */
+static void patch_branch(u32 *branch_insn)
+{
+	/* offset = (target - (branch + 4)) / 4 */
+	int offset = (int)(tcache_ptr - branch_insn) - 1;
+	/* Replace the low 16 bits (immediate field) with the offset */
+	*branch_insn = (*branch_insn & 0xffff0000) | (offset & 0xffff);
+}
+
 /* ======== DRC State ======== */
 
 drc68k_state_t drc68k;
@@ -262,6 +300,166 @@ static void emit_safe_write32(void)
 	EMIT(MIPS_ADDIU(SP, SP, 8));
 }
 
+/*
+ * Inline fast-path memory access using PicoDrive's memory maps.
+ * For ROM/RAM (MAP_FLAG clear): direct load/store, no function call.
+ * For I/O (MAP_FLAG set): fall back to m68k_read/write functions.
+ *
+ * Uses patch_branch() for all forward branches — no hand-counted offsets.
+ *
+ * Input: a0 = 68k address (caller masks to 24 bits)
+ * Output: v0 = read value (reads), nothing (writes: a1 = data)
+ * Clobbers: REG_TMP3, REG_TMP4, a0
+ */
+static void emit_inline_read16(void)
+{
+	/* a0 &= 0x00fffffe (24-bit mask + word-align) */
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xfffe));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+
+	/* REG_TMP3 = m68k_read16_map[a0 >> 16] */
+	emit_load_imm32(REG_TMP3, (u32)(uptr)m68k_read16_map);
+	EMIT(MIPS_SRL(REG_TMP4, 4, 16));
+	EMIT(MIPS_SLL(REG_TMP4, REG_TMP4, 2));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, REG_TMP4));
+	EMIT(MIPS_LW(REG_TMP3, 0, REG_TMP3));
+
+	/* Check MAP_FLAG (top bit). If set -> slow path */
+	EMIT(MIPS_SRL(REG_TMP4, REG_TMP3, 31));
+	u32 *to_slow = emit_branch_placeholder_bne(REG_TMP4, Z0);
+
+	/* === Fast path: direct memory load === */
+	EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 1));   /* base = v << 1 */
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, 4));  /* addr = base + a0 */
+	EMIT(MIPS_INSN(37, REG_TMP3, 2, 0, 0, 0)); /* LHU v0, 0(REG_TMP3) */
+	u32 *skip_slow = emit_branch_placeholder_beq(Z0, Z0); /* unconditional skip */
+
+	/* === Slow path: call m68k_read16 === */
+	patch_branch(to_slow); /* slow path starts here */
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)m68k_read16);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09)); /* JALR */
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+
+	/* === Both paths converge here, result in v0 === */
+	patch_branch(skip_slow);
+}
+
+static void emit_inline_read32(void)
+{
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xfffc));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+
+	emit_load_imm32(REG_TMP3, (u32)(uptr)m68k_read16_map);
+	EMIT(MIPS_SRL(REG_TMP4, 4, 16));
+	EMIT(MIPS_SLL(REG_TMP4, REG_TMP4, 2));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, REG_TMP4));
+	EMIT(MIPS_LW(REG_TMP3, 0, REG_TMP3));
+
+	EMIT(MIPS_SRL(REG_TMP4, REG_TMP3, 31));
+	u32 *to_slow = emit_branch_placeholder_bne(REG_TMP4, Z0);
+
+	/* Fast path: LW */
+	EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 1));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, 4));
+	EMIT(MIPS_LW(2, 0, REG_TMP3)); /* LW v0, 0(REG_TMP3) */
+	u32 *skip_slow = emit_branch_placeholder_beq(Z0, Z0);
+
+	/* Slow path */
+	patch_branch(to_slow);
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)m68k_read32);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+
+	patch_branch(skip_slow);
+}
+
+static void emit_inline_write16(void)
+{
+	/* a0=addr, a1=data. Save a1 in s-reg territory (stack) for slow path */
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xfffe));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+
+	emit_load_imm32(REG_TMP3, (u32)(uptr)m68k_write16_map);
+	EMIT(MIPS_SRL(REG_TMP4, 4, 16));
+	EMIT(MIPS_SLL(REG_TMP4, REG_TMP4, 2));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, REG_TMP4));
+	EMIT(MIPS_LW(REG_TMP3, 0, REG_TMP3));
+
+	EMIT(MIPS_SRL(REG_TMP4, REG_TMP3, 31));
+	u32 *to_slow = emit_branch_placeholder_bne(REG_TMP4, Z0);
+
+	/* Fast path: SH */
+	EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 1));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, 4));
+	EMIT(MIPS_INSN(41, REG_TMP3, 5, 0, 0, 0)); /* SH a1, 0(REG_TMP3) */
+	u32 *skip_slow = emit_branch_placeholder_beq(Z0, Z0);
+
+	/* Slow path */
+	patch_branch(to_slow);
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)m68k_write16);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+
+	patch_branch(skip_slow);
+}
+
+static void emit_inline_write32(void)
+{
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xfffc));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+
+	emit_load_imm32(REG_TMP3, (u32)(uptr)m68k_write16_map);
+	EMIT(MIPS_SRL(REG_TMP4, 4, 16));
+	EMIT(MIPS_SLL(REG_TMP4, REG_TMP4, 2));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, REG_TMP4));
+	EMIT(MIPS_LW(REG_TMP3, 0, REG_TMP3));
+
+	EMIT(MIPS_SRL(REG_TMP4, REG_TMP3, 31));
+	u32 *to_slow = emit_branch_placeholder_bne(REG_TMP4, Z0);
+
+	/* Fast path: SW */
+	EMIT(MIPS_SLL(REG_TMP3, REG_TMP3, 1));
+	EMIT(MIPS_ADDU(REG_TMP3, REG_TMP3, 4));
+	EMIT(MIPS_SW(5, 0, REG_TMP3)); /* SW a1, 0(REG_TMP3) */
+	u32 *skip_slow = emit_branch_placeholder_beq(Z0, Z0);
+
+	/* Slow path */
+	patch_branch(to_slow);
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
+	emit_load_imm32(REG_TMP4, (u32)(uptr)m68k_write32);
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
+
+	patch_branch(skip_slow);
+}
+
 /* Emit: call a C function. addr in a0 already. Clobbers t-regs.
  * We save/restore s-regs around the call since callee may clobber them.
  * func_ptr is the address of the read/write function from M68K_CONTEXT. */
@@ -320,15 +518,9 @@ static void emit_load_imm32(int reg, u32 val)
 	}
 }
 
-/* Inline fast-path memory read using PicoDrive's memory map.
- * For ROM/RAM (no MAP_FLAG), does a direct load — no function call.
- * For I/O (MAP_FLAG set), falls back to function call.
- *
- * Input: a0 = 68k address (already masked to 24 bits)
- * Output: v0 = read value
- * Clobbers: REG_TMP3, REG_TMP4, a0
- */
-static void emit_inline_read16(void)
+/* OLD INLINE FUNCTIONS REMOVED - using new patch-based versions above */
+#if 0
+static void OLD_emit_inline_read16(void)
 {
 	/* a0 &= 0x00fffffe (mask + word-align) */
 	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
@@ -482,6 +674,8 @@ static void emit_inline_write32(void)
 	EMIT(MIPS_ADDIU(SP, SP, 8));
 }
 
+#endif /* old inline functions */
+
 /* Emit: subtract cycles and check for exit */
 static void emit_cycle_check(int cycles, u32 *exit_label)
 {
@@ -538,8 +732,37 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 				emit_load_imm32(REG_TMP0, (s16)imm);
 				extra_words = 2;
 			}
+		} else if (src_mode == 2) {
+			/* (An) - register indirect read */
+			emit_load_areg(4, src_r);
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 5) {
+			/* d16(An) - displacement read */
+			s16 disp = (s16)fetch_68k_word(pc + 2);
+			extra_words = 2;
+			emit_load_areg(4, src_r);
+			EMIT(MIPS_ADDIU(4, 4, disp));
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 3) {
+			/* (An)+ post-increment read */
+			emit_load_areg(4, src_r);
+			emit_load_areg(REG_TMP1, src_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? 4 : 2));
+			emit_store_areg(src_r, REG_TMP1);
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 4) {
+			/* -(An) pre-decrement read */
+			emit_load_areg(REG_TMP1, src_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? -4 : -2));
+			emit_store_areg(src_r, REG_TMP1);
+			EMIT(MIPS_ADDU(4, REG_TMP1, Z0));
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
-			return -1; /* Memory modes need inline fast-path to be worthwhile */
+			return -1;
 		}
 
 		/* Store to destination.
@@ -564,8 +787,37 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_areg(dst_r, REG_TMP0);
 			*cycles_out = 4;
 			return 2 + extra_words;
+		} else if (dst_mode == 2) {
+			/* (An) - register indirect write */
+			emit_load_areg(4, dst_r);
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
+		} else if (dst_mode == 5) {
+			/* d16(An) - displacement write */
+			s16 disp = (s16)fetch_68k_word(pc + 2 + extra_words);
+			extra_words += 2;
+			emit_load_areg(4, dst_r);
+			EMIT(MIPS_ADDIU(4, 4, disp));
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
+		} else if (dst_mode == 3) {
+			/* (An)+ post-increment write */
+			emit_load_areg(4, dst_r);
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
+			emit_load_areg(REG_TMP1, dst_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? 4 : 2));
+			emit_store_areg(dst_r, REG_TMP1);
+		} else if (dst_mode == 4) {
+			/* -(An) pre-decrement write */
+			emit_load_areg(REG_TMP1, dst_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? -4 : -2));
+			emit_store_areg(dst_r, REG_TMP1);
+			EMIT(MIPS_ADDU(4, REG_TMP1, Z0));
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
 		} else {
-			return -1; /* memory dest modes disabled for testing */
+			return -1;
 		}
 
 		emit_update_nz_long(REG_TMP0);
