@@ -76,8 +76,8 @@ static void rdp_blit_frame(surface_t *fb)
 	/* Blit the 8-bit texture - RDP does palette lookup in hardware */
 	rdpq_tex_blit(&emu_surf, 0, y_off, NULL);
 
-	/* Detach (queues the work, doesn't wait) */
-	rdpq_detach();
+	/* Detach and show (schedules display_show when RDP finishes) */
+	rdpq_detach_show();
 }
 
 /* CPU fallback blit for when RDP can't be used */
