@@ -515,15 +515,17 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		int dst_mode = (opcode >> 6) & 7;
 		int dst_r = (opcode >> 9) & 7;
 
-		/* Load source into REG_TMP0
-		 * Phase: only register and immediate modes (no memory access) */
+		/* Load source value into REG_TMP0.
+		 * After this block: REG_TMP0 = source value.
+		 * Memory reads use emit_safe_read which clobbers a0, t-regs.
+		 * Result comes back in v0 (reg 2), moved to REG_TMP0. */
 		int extra_words = 0;
 
 		if (src_mode == 0) {
-			/* Dn */
+			/* Dn - register direct */
 			emit_load_dreg(REG_TMP0, src_r);
 		} else if (src_mode == 1) {
-			/* An */
+			/* An - address register direct */
 			emit_load_areg(REG_TMP0, src_r);
 		} else if (src_mode == 7 && src_r == 4) {
 			/* #immediate */
@@ -536,11 +538,45 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 				emit_load_imm32(REG_TMP0, (s16)imm);
 				extra_words = 2;
 			}
+		} else if (src_mode == 2) {
+			/* (An) - address register indirect */
+			emit_load_areg(4, src_r); /* a0 = An */
+			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0)); /* TMP0 = v0 (result) */
+		} else if (src_mode == 5) {
+			/* d16(An) - displacement */
+			s16 disp = (s16)fetch_68k_word(pc + 2);
+			extra_words = 2;
+			emit_load_areg(4, src_r); /* a0 = An */
+			EMIT(MIPS_ADDIU(4, 4, disp)); /* a0 += displacement */
+			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 3) {
+			/* (An)+ post-increment read */
+			emit_load_areg(4, src_r); /* a0 = An (before increment) */
+			/* Increment An now (safe: a0 already has the read address) */
+			emit_load_areg(REG_TMP1, src_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? 4 : 2));
+			emit_store_areg(src_r, REG_TMP1);
+			/* Read from original address (still in a0) */
+			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 4) {
+			/* -(An) pre-decrement read */
+			emit_load_areg(REG_TMP1, src_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? -4 : -2));
+			emit_store_areg(src_r, REG_TMP1); /* store decremented An */
+			EMIT(MIPS_ADDU(4, REG_TMP1, Z0)); /* a0 = new An */
+			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
-			return -1; /* Memory modes disabled - cause FAME crashes */
+			return -1; /* unsupported source mode */
 		}
 
-		/* Store to destination - register modes only */
+		/* Store to destination.
+		 * REG_TMP0 has the source value.
+		 * For memory writes: save REG_TMP0 to stack before JALR
+		 * since all t-regs are caller-saved and may be clobbered. */
 		if (dst_mode == 0) {
 			/* Dn */
 			if (op_size == 2) {
@@ -555,12 +591,43 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 				emit_store_dreg(dst_r, REG_TMP0);
 			}
 		} else if (dst_mode == 1) {
-			/* An (MOVEA) - no flags */
+			/* An (MOVEA) - no flags affected */
 			emit_store_areg(dst_r, REG_TMP0);
 			*cycles_out = 4;
 			return 2 + extra_words;
+		} else if (dst_mode == 2) {
+			/* (An) - address register indirect write */
+			/* a0 = An, a1 = data. Save TMP0 first since write clobbers t-regs */
+			emit_load_areg(4, dst_r); /* a0 = An */
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0)); /* a1 = source data */
+			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
+		} else if (dst_mode == 5) {
+			/* d16(An) - displacement write */
+			s16 disp = (s16)fetch_68k_word(pc + 2 + extra_words);
+			extra_words += 2;
+			emit_load_areg(4, dst_r);
+			EMIT(MIPS_ADDIU(4, 4, disp));
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
+			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
+		} else if (dst_mode == 3) {
+			/* (An)+ post-increment write */
+			emit_load_areg(4, dst_r); /* a0 = An */
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0)); /* a1 = data */
+			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
+			/* Increment An after write */
+			emit_load_areg(REG_TMP1, dst_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? 4 : 2));
+			emit_store_areg(dst_r, REG_TMP1);
+		} else if (dst_mode == 4) {
+			/* -(An) pre-decrement write */
+			emit_load_areg(REG_TMP1, dst_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? -4 : -2));
+			emit_store_areg(dst_r, REG_TMP1); /* store decremented An */
+			EMIT(MIPS_ADDU(4, REG_TMP1, Z0)); /* a0 = new An */
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0)); /* a1 = data */
+			if (op_size == 2) emit_safe_write32(); else emit_safe_write16();
 		} else {
-			return -1;
+			return -1; /* unsupported dest mode */
 		}
 
 		emit_update_nz_long(REG_TMP0);
