@@ -805,7 +805,11 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
 		if (cond == 1) {
-			/* BSR too complex for now */
+			/* BSR too complex */
+			return -1;
+		}
+		/* Only BEQ/BNE for now - simplest conditions */
+		if (cond != 6 && cond != 7 && cond != 0) {
 			return -1;
 		}
 
