@@ -236,14 +236,22 @@ static void emit_load_imm32(int reg, u32 val)
 	}
 }
 
-/* Emit: read long from 68k address in a0, result in v0 */
+/* Emit: read long from 68k address in a0, result in v0.
+ * Saves/restores REG_CTX around call for safety. */
 static void emit_mem_read_long(void)
 {
 	/* Mask to 24-bit address space */
 	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
 	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
 	EMIT(MIPS_AND(4, 4, REG_TMP4)); /* a0 &= 0xffffff */
+	/* Save ctx on stack (callee might clobber despite ABI) */
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
 	emit_call_read32(CTX_OFF_READ_LONG);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
 }
 
 /* Emit: read word from 68k address in a0, result in v0 */
@@ -252,7 +260,13 @@ static void emit_mem_read_word(void)
 	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
 	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
 	EMIT(MIPS_AND(4, 4, REG_TMP4));
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
 	emit_call_read16(CTX_OFF_READ_WORD);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
 }
 
 /* Emit: write long to 68k address. a0=addr, a1=data */
@@ -261,7 +275,13 @@ static void emit_mem_write_long(void)
 	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
 	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
 	EMIT(MIPS_AND(4, 4, REG_TMP4));
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
 	emit_call_write32(CTX_OFF_WRITE_LONG);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
 }
 
 /* Emit: write word. a0=addr, a1=data */
@@ -270,7 +290,13 @@ static void emit_mem_write_word(void)
 	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
 	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
 	EMIT(MIPS_AND(4, 4, REG_TMP4));
+	EMIT(MIPS_ADDIU(SP, SP, -8));
+	EMIT(MIPS_SW(REG_CTX, 0, SP));
+	EMIT(MIPS_SW(REG_CYCLES, 4, SP));
 	emit_call_write16(CTX_OFF_WRITE_WORD);
+	EMIT(MIPS_LW(REG_CTX, 0, SP));
+	EMIT(MIPS_LW(REG_CYCLES, 4, SP));
+	EMIT(MIPS_ADDIU(SP, SP, 8));
 }
 
 /* Emit: subtract cycles and check for exit */
@@ -848,8 +874,9 @@ static drc68k_block_t *compile_block(u32 addr_68k)
 		insn_count++;
 	}
 
-	if (insn_count == 0) {
-		/* Couldn't compile anything, revert */
+	if (insn_count < 3) {
+		/* Block too short - overhead of prologue/epilogue exceeds benefit.
+		 * Also reduces risk of flag bugs on short sequences. */
 		tcache_ptr = (u32 *)code_start;
 		return NULL;
 	}
