@@ -172,7 +172,9 @@ set_platform()
     MFLAGS="-march=vr4300 -mtune=vr4300"
     ARCH=mips64
     CFLAGS="$CFLAGS -DN64 -I${N64_INST:-/opt/libdragon}/mips64-elf/include"
-    LDFLAGS="$LDFLAGS -L${N64_INST:-/opt/libdragon}/mips64-elf/lib -T${N64_INST:-/opt/libdragon}/mips64-elf/lib/n64.ld -ldragon -lc -lm -ldragonsys"
+    LDFLAGS="$LDFLAGS -L${N64_INST:-/opt/libdragon}/mips64-elf/lib -T${N64_INST:-/opt/libdragon}/mips64-elf/lib/n64.ld -ldragon -lc -lm -ldragonsys -Wl,--wrap,__do_global_ctors"
+    # Disable LTO - causes symbol resolution issues with libdragon inline functions
+    CFLAGS="$CFLAGS -fno-lto"
     sound_drivers=""
     have_libavcodec="no"
     ;;
