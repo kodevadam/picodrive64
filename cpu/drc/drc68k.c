@@ -162,20 +162,30 @@ static void emit_store_areg(int areg_num, int mips_reg)
 	EMIT(MIPS_SW(mips_reg, CTX_OFF_AREG(areg_num), REG_CTX));
 }
 
-/* Emit: update N and Z flags from result in mips_reg (long) */
+/* Emit: update N and Z flags from result in mips_reg (long size)
+ * FAME flag format:
+ *   flag_NotZ = result (any bit set = Z clear)
+ *   flag_N = result (bit 31 = N for long, bit 15 for word, bit 7 for byte)
+ */
 static void emit_update_nz_long(int mips_reg)
 {
-	/* flag_NotZ = result (non-zero if result != 0) */
 	EMIT(MIPS_SW(mips_reg, CTX_OFF_FLAG_NZ, REG_CTX));
-	/* flag_N = result (bit 31 is sign) */
 	EMIT(MIPS_SW(mips_reg, CTX_OFF_FLAG_N, REG_CTX));
 }
 
-/* Emit: clear V and C flags */
+/* Emit: clear V and C flags (FAME: flag_C bit 8 = carry, flag_V bit 7 = overflow) */
 static void emit_clear_vc(void)
 {
 	EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
 	EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_C, REG_CTX));
+}
+
+/* Emit: set carry flag from SLTU result (0 or 1) -> FAME wants bit 8 */
+static void emit_set_carry_from_sltu(int sltu_reg)
+{
+	EMIT(MIPS_SLL(sltu_reg, sltu_reg, 8)); /* shift to bit 8 */
+	EMIT(MIPS_SW(sltu_reg, CTX_OFF_FLAG_C, REG_CTX));
+	EMIT(MIPS_SW(sltu_reg, CTX_OFF_FLAG_X, REG_CTX));
 }
 
 /* Emit: call a C function. addr in a0 already. Clobbers t-regs.
@@ -777,17 +787,26 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			*cycles_out = 10;
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
-		if (cond >= 2) {
-			/* Bcc - conditional branches disabled for now due to flag bugs.
-			 * Fall back to FAME for correct condition evaluation. */
+		if (cond == 1) {
+			/* BSR */
 			return -1;
 		}
 
-		/* (dead code for now - Bcc disabled above) */
-		/* Load flags from context */
-		EMIT(MIPS_LW(REG_TMP0, CTX_OFF_FLAG_NZ, REG_CTX));
-		EMIT(MIPS_LW(REG_TMP1, CTX_OFF_FLAG_N, REG_CTX));
-		EMIT(MIPS_LW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
+		/*
+		 * Bcc - conditional branch.
+		 * FAME flag format (how DRC and FAME both store them):
+		 *   flag_NotZ: raw result. Z set if flag_NotZ == 0
+		 *   flag_N: raw result. N set if bit 31 set (for .L ops)
+		 *   flag_C: SLTU result 0/1 from DRC, or bit 8 from FAME
+		 *           We check non-zero for either representation
+		 *   flag_V: similar mixed representation
+		 *
+		 * Since DRC and FAME may store C differently (bit 0 vs bit 8),
+		 * we check "!= 0" which works for both representations.
+		 */
+		EMIT(MIPS_LW(REG_TMP0, CTX_OFF_FLAG_NZ, REG_CTX));  /* for Z */
+		EMIT(MIPS_LW(REG_TMP1, CTX_OFF_FLAG_N, REG_CTX));   /* for N */
+		EMIT(MIPS_LW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));   /* for C */
 
 		u32 taken_pc = target & 0xffffff;
 		u32 not_taken_pc = (pc + insn_sz) & 0xffffff;
@@ -795,42 +814,55 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		/* Default: not-taken PC */
 		emit_load_imm32(REG_TMP3, not_taken_pc);
 
-		/* Check condition and overwrite with taken PC if true */
+		/* Emit: if condition true, overwrite REG_TMP3 with taken_pc.
+		 * Branch offset 3 skips the 2-insn load_imm32 + nop. For
+		 * load_imm32 that needs LUI+ORI (2 insns), we skip 2 insns.
+		 * Use worst case skip of 4 to be safe with any imm32 size. */
+		/* Always use LUI+ORI for taken_pc to ensure fixed 2-insn size */
 		switch (cond) {
-		case 4: /* BCC (carry clear) */
-			EMIT(MIPS_BNE(REG_TMP2, Z0, 3)); /* if C!=0, skip */
+		case 4: /* BCC (carry clear) - branch if C==0 */
+			EMIT(MIPS_BNE(REG_TMP2, Z0, 2));
 			EMIT(MIPS_NOP);
-			emit_load_imm32(REG_TMP3, taken_pc);
+			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
+			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
-		case 5: /* BCS (carry set) */
-			EMIT(MIPS_BEQ(REG_TMP2, Z0, 3)); /* if C==0, skip */
+		case 5: /* BCS (carry set) - branch if C!=0 */
+			EMIT(MIPS_BEQ(REG_TMP2, Z0, 2));
 			EMIT(MIPS_NOP);
-			emit_load_imm32(REG_TMP3, taken_pc);
+			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
+			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
-		case 6: /* BNE (not equal / Z clear) */
-			EMIT(MIPS_BEQ(REG_TMP0, Z0, 3)); /* if NotZ==0 (Z set), skip */
+		case 6: /* BNE (not equal) - branch if Z clear (NotZ != 0) */
+			EMIT(MIPS_BEQ(REG_TMP0, Z0, 2));
 			EMIT(MIPS_NOP);
-			emit_load_imm32(REG_TMP3, taken_pc);
+			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
+			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
-		case 7: /* BEQ (equal / Z set) */
-			EMIT(MIPS_BNE(REG_TMP0, Z0, 3)); /* if NotZ!=0 (Z clear), skip */
+		case 7: /* BEQ (equal) - branch if Z set (NotZ == 0) */
+			EMIT(MIPS_BNE(REG_TMP0, Z0, 2));
 			EMIT(MIPS_NOP);
-			emit_load_imm32(REG_TMP3, taken_pc);
+			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
+			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
-		case 10: /* BPL (plus / N clear) */
-			EMIT(MIPS_SRL(REG_TMP1, REG_TMP1, 31)); /* get sign bit */
-			EMIT(MIPS_BNE(REG_TMP1, Z0, 3));
-			EMIT(MIPS_NOP);
-			emit_load_imm32(REG_TMP3, taken_pc);
-			break;
-		case 11: /* BMI (minus / N set) */
+		case 10: /* BPL (plus) - branch if N clear (bit 31 == 0) */
 			EMIT(MIPS_SRL(REG_TMP1, REG_TMP1, 31));
-			EMIT(MIPS_BEQ(REG_TMP1, Z0, 3));
+			EMIT(MIPS_BNE(REG_TMP1, Z0, 2));
 			EMIT(MIPS_NOP);
-			emit_load_imm32(REG_TMP3, taken_pc);
+			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
+			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
 			break;
+		case 11: /* BMI (minus) - branch if N set (bit 31 == 1) */
+			EMIT(MIPS_SRL(REG_TMP1, REG_TMP1, 31));
+			EMIT(MIPS_BEQ(REG_TMP1, Z0, 2));
+			EMIT(MIPS_NOP);
+			EMIT(MIPS_LUI(REG_TMP3, (taken_pc >> 16) & 0xffff));
+			EMIT(MIPS_ORI(REG_TMP3, REG_TMP3, taken_pc & 0xffff));
+			break;
+		case 12: /* BGE (greater or equal) - branch if N==V */
+		case 13: /* BLT (less than) - branch if N!=V */
+		case 14: /* BGT (greater than) */
+		case 15: /* BLE (less or equal) */
 		default:
-			/* Unsupported condition */
 			return -1;
 		}
 
