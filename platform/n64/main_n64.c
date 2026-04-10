@@ -95,7 +95,10 @@ int main(int argc, char *argv[])
 	/* Brief pause to see messages */
 	for (volatile int i = 0; i < 3000000; i++) {}
 
+	/* Tear down console and reinitialize display for framebuffer mode */
 	console_close();
+	display_close();
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
 
 	/* Emulation loop */
 	for (;;) {
@@ -103,7 +106,7 @@ int main(int argc, char *argv[])
 
 		/* Blit to display */
 		surface_t *fb = display_get();
-		if (fb) {
+		if (fb && fb->buffer) {
 			uint16_t *src = screen_buffer;
 			uint16_t *dst = (uint16_t *)fb->buffer;
 			int h = g_screen_height;
