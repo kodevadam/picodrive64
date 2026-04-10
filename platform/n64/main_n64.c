@@ -1,10 +1,5 @@
 /*
  * PicoDrive N64 - Standalone main with embedded ROM
- * Embeds Genesis ROM directly, auto-starts on boot.
- *
- * (C) 2026
- * This work is licensed under the terms of MAME license.
- * See COPYING file in the top-level directory.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,36 +9,21 @@
 
 #include "../common/input_pico.h"
 #include "n64.h"
-#include "in_n64.h"
 #include "embedded_rom.h"
 
-/* Globals expected by various parts of PicoDrive */
+/* Globals expected by PicoDrive core */
 char **g_argv;
 void *g_screen_ptr;
 int g_screen_width  = 320;
 int g_screen_height = 240;
 int g_screen_ppitch = 320;
 
-/* Screen buffer */
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
-
-/* Display an error message on screen and halt */
-static void fatal(const char *msg)
-{
-	console_init();
-	console_set_render_mode(RENDER_MANUAL);
-	printf("\n\n  PicoDrive64 - FATAL ERROR\n\n  %s\n", msg);
-	console_render();
-	for (;;) { /* halt */ }
-}
 
 /* Convert RGB565 to RGBA5551 */
 static inline uint16_t rgb565_to_rgba5551(uint16_t c)
 {
-	uint16_t r = (c >> 11) & 0x1f;
-	uint16_t g = (c >> 5) & 0x3f;
-	uint16_t b = c & 0x1f;
-	return (r << 11) | ((g >> 1) << 6) | (b << 1) | 1;
+	return ((c >> 11) << 11) | (((c >> 6) & 0x1f) << 6) | ((c & 0x1f) << 1) | 1;
 }
 
 int main(int argc, char *argv[])
@@ -53,70 +33,78 @@ int main(int argc, char *argv[])
 	g_argv = argv;
 	g_screen_ptr = screen_buffer;
 
-	/* === N64 hardware init === */
+	/* Minimal N64 init - just display */
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
-	joypad_init();
 
-	/* Show boot message */
+	/* Show boot message via console */
 	console_init();
 	console_set_render_mode(RENDER_MANUAL);
-	printf("\n  PicoDrive64\n  Loading %s...\n", EMBEDDED_ROM_NAME);
+	printf("\n\n");
+	printf("  ================================\n");
+	printf("  PicoDrive64\n");
+	printf("  ================================\n\n");
+	printf("  ROM: %s\n", EMBEDDED_ROM_NAME);
+	printf("  Size: %d bytes\n", EMBEDDED_ROM_SIZE);
+	printf("  RAM: %d KB\n\n", get_memory_size() / 1024);
+	printf("  Initializing emulator...\n");
 	console_render();
 
-	/* === Memory pool - use malloc, not static (ares may have 4MB) === */
-	size_t pool_size = (get_memory_size() >= 0x800000) ? (4*1024*1024) : (1024*1024);
-
-	/* === Initialize PicoDrive core === */
+	/* Init PicoDrive core */
 	PicoInit();
 
-	/* Configure emulator */
 	PicoIn.opt = POPT_EN_FM | POPT_EN_PSG | POPT_EN_STEREO | POPT_EN_FM_DAC;
-	PicoIn.opt |= POPT_ALT_RENDERER; /* fast renderer */
+	PicoIn.opt |= POPT_ALT_RENDERER;
 	PicoIn.sndRate = 22050;
-	PicoIn.regionOverride = 0; /* auto-detect */
 
-	/* === Load ROM from embedded data === */
-	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
-	if (!rom_copy)
-		fatal("Out of memory allocating ROM buffer!");
-
-	memcpy(rom_copy, embedded_rom_data, EMBEDDED_ROM_SIZE);
-
-	printf("  Inserting cartridge (%d KB)...\n", EMBEDDED_ROM_SIZE / 1024);
+	printf("  Allocating ROM buffer...\n");
 	console_render();
 
-	if (PicoCartInsert(rom_copy, EMBEDDED_ROM_SIZE, NULL))
-		fatal("PicoCartInsert failed!");
+	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
+	if (!rom_copy) {
+		printf("  ERROR: Out of memory!\n");
+		console_render();
+		for (;;) {}
+	}
+	memcpy(rom_copy, embedded_rom_data, EMBEDDED_ROM_SIZE);
 
-	/* Power on */
+	printf("  Inserting cartridge...\n");
+	console_render();
+
+	if (PicoCartInsert(rom_copy, EMBEDDED_ROM_SIZE, NULL)) {
+		printf("  ERROR: PicoCartInsert failed!\n");
+		console_render();
+		for (;;) {}
+	}
+
+	printf("  Powering on...\n");
+	console_render();
+
 	PicoPower();
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Set up rendering */
 	PicoDrawSetOutFormat(PDF_RGB555, 0);
 	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
 	printf("  Starting emulation!\n");
 	console_render();
 
-	/* Brief delay so user can see the boot messages */
-	for (volatile int i = 0; i < 5000000; i++) {}
+	/* Brief pause to see messages */
+	for (volatile int i = 0; i < 3000000; i++) {}
 
-	/* Close console, switch to framebuffer mode */
 	console_close();
 
-	/* === Main emulation loop === */
+	/* Emulation loop */
 	for (;;) {
-		/* Run one frame */
 		PicoFrame();
 
-		/* Blit to N64 display with pixel format conversion */
+		/* Blit to display */
 		surface_t *fb = display_get();
 		if (fb) {
 			uint16_t *src = screen_buffer;
 			uint16_t *dst = (uint16_t *)fb->buffer;
-			int h = 224; /* Genesis typical height */
+			int h = g_screen_height;
+			int w = g_screen_width;
 			int y_off = (240 - h) / 2;
 
 			if (y_off > 0)
@@ -125,13 +113,13 @@ int main(int argc, char *argv[])
 			for (int y = 0; y < h; y++) {
 				uint16_t *s = &src[y * 320];
 				uint16_t *d = &dst[(y + y_off) * 320];
-				for (int x = 0; x < 320; x++)
+				for (int x = 0; x < w; x++)
 					d[x] = rgb565_to_rgba5551(s[x]);
 			}
 			display_show(fb);
 		}
 
-		/* Read controller input */
+		/* Read input */
 		joypad_poll();
 		joypad_buttons_t btns = joypad_get_buttons_pressed(JOYPAD_PORT_1);
 		joypad_inputs_t inputs = joypad_get_inputs(JOYPAD_PORT_1);
@@ -153,46 +141,27 @@ int main(int argc, char *argv[])
 	}
 }
 
-/* === Stubs required by PicoDrive core === */
+/* Platform stubs required by PicoDrive core */
 void emu_video_mode_change(int start_line, int line_count, int start_col, int col_count)
 {
-	/* Update visible area */
 	g_screen_width = col_count;
 	g_screen_height = line_count;
 }
 
 void emu_32x_startup(void) { }
+void lprintf(const char *fmt, ...) { }
 
-void lprintf(const char *fmt, ...)
-{
-	/* In standalone mode, debug output goes nowhere visible */
-}
-
-/* Memory functions for PicoDrive core */
 void *plat_mmap(unsigned long addr, size_t size, int need_exec, int is_fixed)
-{
-	return calloc(1, size);
-}
+{ return calloc(1, size); }
 
 void *plat_mremap(void *ptr, size_t oldsize, size_t newsize)
-{
-	return realloc(ptr, newsize);
-}
+{ return realloc(ptr, newsize); }
 
 void plat_munmap(void *ptr, size_t size)
-{
-	free(ptr);
-}
+{ free(ptr); }
 
-void *plat_mem_get_for_drc(size_t size)
-{
-	return NULL; /* no DRC in standalone mode */
-}
-
-int plat_mem_set_exec(void *ptr, size_t size)
-{
-	return 0;
-}
+void *plat_mem_get_for_drc(size_t size) { return NULL; }
+int plat_mem_set_exec(void *ptr, size_t size) { return 0; }
 
 void cache_flush_d_inval_i(void *start, void *end)
 {
@@ -203,7 +172,6 @@ void cache_flush_d_inval_i(void *start, void *end)
 	}
 }
 
-/* MP3 stubs */
 int  mp3_get_bitrate(void *f, int size) { return 0; }
 void mp3_start_play(void *f, int pos) { }
 void mp3_update(s32 *buffer, int length, int stereo) { }
