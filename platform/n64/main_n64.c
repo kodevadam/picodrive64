@@ -92,7 +92,7 @@ int main(int argc, char *argv[])
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
-	PicoIn.sndRate = 0;                  /* disable audio entirely */
+	PicoIn.sndRate = 11025;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
 	if (!rom_copy) {
