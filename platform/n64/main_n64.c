@@ -101,21 +101,6 @@ int main(int argc, char *argv[])
 	display_close();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
 
-	/* Test: draw a red screen to verify display pipeline */
-	{
-		surface_t *fb = display_get();
-		if (fb && fb->buffer) {
-			uint16_t *dst = (uint16_t *)fb->buffer;
-			/* Fill with red (RGBA5551: R=31,G=0,B=0,A=1) */
-			uint16_t red = (31 << 11) | 1;
-			for (int i = 0; i < 320 * 240; i++)
-				dst[i] = red;
-			display_show(fb);
-		}
-		/* Show red for 2 seconds so we know display works */
-		for (volatile int i = 0; i < 10000000; i++) {}
-	}
-
 	/* Emulation loop */
 	for (;;) {
 		PicoFrame();
