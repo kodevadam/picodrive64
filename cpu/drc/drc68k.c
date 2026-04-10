@@ -808,7 +808,10 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			/* BSR too complex */
 			return -1;
 		}
-		/* BRA + BEQ/BNE + BCC/BCS enabled. BPL/BMI disabled (N flag bug) */
+		/* BRA + BEQ/BNE + BCC/BCS enabled.
+		 * BPL/BMI disabled: flag_N stores raw result, and N bit position
+		 * depends on operation size (bit 7/15/31) which we don't track.
+		 * BGE/BLT/BGT/BLE disabled: need V flag. */
 		if (cond != 0 && cond != 4 && cond != 5 && cond != 6 && cond != 7) {
 			return -1;
 		}
