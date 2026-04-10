@@ -178,6 +178,101 @@ static void emit_clear_vc(void)
 	EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_C, REG_CTX));
 }
 
+/* Emit: call a C function. addr in a0 already. Clobbers t-regs.
+ * We save/restore s-regs around the call since callee may clobber them.
+ * func_ptr is the address of the read/write function from M68K_CONTEXT. */
+static void emit_call_read32(int ctx_offset)
+{
+	/* Load function pointer from context */
+	EMIT(MIPS_LW(REG_TMP4, ctx_offset, REG_CTX));
+	/* JALR t4 */
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09)); /* JALR ra, t4 */
+	EMIT(MIPS_NOP); /* delay slot */
+	/* Result is in v0 (reg 2) */
+}
+
+static void emit_call_read16(int ctx_offset)
+{
+	EMIT(MIPS_LW(REG_TMP4, ctx_offset, REG_CTX));
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+}
+
+static void emit_call_write32(int ctx_offset)
+{
+	/* a0=addr already set, a1=data already set */
+	EMIT(MIPS_LW(REG_TMP4, ctx_offset, REG_CTX));
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+}
+
+static void emit_call_write16(int ctx_offset)
+{
+	EMIT(MIPS_LW(REG_TMP4, ctx_offset, REG_CTX));
+	EMIT(MIPS_INSN(0, REG_TMP4, 0, LR, 0, 0x09));
+	EMIT(MIPS_NOP);
+}
+
+/* Context offsets for memory access function pointers */
+#define CTX_OFF_READ_BYTE   (offsetof(M68K_CONTEXT, read_byte))
+#define CTX_OFF_READ_WORD   (offsetof(M68K_CONTEXT, read_word))
+#define CTX_OFF_READ_LONG   (offsetof(M68K_CONTEXT, read_long))
+#define CTX_OFF_WRITE_BYTE  (offsetof(M68K_CONTEXT, write_byte))
+#define CTX_OFF_WRITE_WORD  (offsetof(M68K_CONTEXT, write_word))
+#define CTX_OFF_WRITE_LONG  (offsetof(M68K_CONTEXT, write_long))
+
+/* Emit: load immediate 32-bit value into register */
+static void emit_load_imm32(int reg, u32 val)
+{
+	if (val == 0) {
+		EMIT(MIPS_ADDU(reg, Z0, Z0));
+	} else if ((s32)val >= -32768 && (s32)val < 32768) {
+		EMIT(MIPS_ADDIU(reg, Z0, (s16)val));
+	} else if ((val & 0xffff) == 0) {
+		EMIT(MIPS_LUI(reg, val >> 16));
+	} else {
+		EMIT(MIPS_LUI(reg, val >> 16));
+		EMIT(MIPS_ORI(reg, reg, val & 0xffff));
+	}
+}
+
+/* Emit: read long from 68k address in a0, result in v0 */
+static void emit_mem_read_long(void)
+{
+	/* Mask to 24-bit address space */
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
+	EMIT(MIPS_AND(4, 4, REG_TMP4)); /* a0 &= 0xffffff */
+	emit_call_read32(CTX_OFF_READ_LONG);
+}
+
+/* Emit: read word from 68k address in a0, result in v0 */
+static void emit_mem_read_word(void)
+{
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+	emit_call_read16(CTX_OFF_READ_WORD);
+}
+
+/* Emit: write long to 68k address. a0=addr, a1=data */
+static void emit_mem_write_long(void)
+{
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+	emit_call_write32(CTX_OFF_WRITE_LONG);
+}
+
+/* Emit: write word. a0=addr, a1=data */
+static void emit_mem_write_word(void)
+{
+	EMIT(MIPS_LUI(REG_TMP4, 0x00ff));
+	EMIT(MIPS_ORI(REG_TMP4, REG_TMP4, 0xffff));
+	EMIT(MIPS_AND(4, 4, REG_TMP4));
+	emit_call_write16(CTX_OFF_WRITE_WORD);
+}
+
 /* Emit: subtract cycles and check for exit */
 static void emit_cycle_check(int cycles, u32 *exit_label)
 {
@@ -211,29 +306,71 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		int dst_mode = (opcode >> 6) & 7;
 		int dst_r = (opcode >> 9) & 7;
 
-		/* Phase 1: only Dn->Dn moves */
-		if (src_mode == 0 && dst_mode == 0) {
+		/* Load source into REG_TMP0 */
+		int extra_words = 0;
+
+		if (src_mode == 0) {
+			/* Dn */
 			emit_load_dreg(REG_TMP0, src_r);
+		} else if (src_mode == 1) {
+			/* An */
+			emit_load_areg(REG_TMP0, src_r);
+		} else if (src_mode == 7 && src_r == 4) {
+			/* #immediate */
 			if (op_size == 2) {
-				/* MOVE.L */
+				u32 imm = (fetch_68k_word(pc+2) << 16) | fetch_68k_word(pc+4);
+				emit_load_imm32(REG_TMP0, imm);
+				extra_words = 4;
+			} else {
+				u16 imm = fetch_68k_word(pc+2);
+				emit_load_imm32(REG_TMP0, (s16)imm);
+				extra_words = 2;
+			}
+		} else if (src_mode == 2) {
+			/* (An) - memory indirect */
+			emit_load_areg(4, src_r); /* a0 = An */
+			if (op_size == 2)
+				emit_mem_read_long();
+			else
+				emit_mem_read_word();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0)); /* TMP0 = v0 */
+		} else {
+			return -1;
+		}
+
+		/* Store to destination */
+		if (dst_mode == 0) {
+			/* Dn */
+			if (op_size == 2) {
 				emit_store_dreg(dst_r, REG_TMP0);
 			} else {
-				/* MOVE.W - preserve upper word of destination */
+				/* preserve upper bits */
 				emit_load_dreg(REG_TMP1, dst_r);
-				EMIT(MIPS_ANDI( REG_TMP0, REG_TMP0, 0xffff));
+				EMIT(MIPS_ANDI(REG_TMP0, REG_TMP0, 0xffff));
 				EMIT(MIPS_LUI(REG_TMP2, 0xffff));
 				EMIT(MIPS_AND(REG_TMP1, REG_TMP1, REG_TMP2));
 				EMIT(MIPS_OR(REG_TMP0, REG_TMP0, REG_TMP1));
 				emit_store_dreg(dst_r, REG_TMP0);
 			}
-			emit_update_nz_long(REG_TMP0);
-			emit_clear_vc();
-			*cycles_out = 4;
-			return 2;
+		} else if (dst_mode == 2) {
+			/* (An) - memory indirect write */
+			emit_load_areg(4, dst_r); /* a0 = An */
+			EMIT(MIPS_ADDU(5, REG_TMP0, Z0)); /* a1 = data */
+			if (op_size == 2)
+				emit_mem_write_long();
+			else
+				emit_mem_write_word();
+		} else if (dst_mode == 1) {
+			/* An (MOVEA) */
+			emit_store_areg(dst_r, REG_TMP0);
+		} else {
+			return -1;
 		}
 
-		/* Dn->An or An->Dn not yet supported, etc. */
-		return -1;
+		emit_update_nz_long(REG_TMP0);
+		emit_clear_vc();
+		*cycles_out = (src_mode >= 2) ? 12 : 4;
+		return 2 + extra_words;
 	}
 
 	case 0x1: /* MOVE.B */
@@ -396,6 +533,38 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			}
 		}
 
+		/* LEA ea, An */
+		if ((opcode & 0xf1c0) == 0x41c0) {
+			int an = (opcode >> 9) & 7;
+			int ea_mode = OP_EA_MODE(opcode);
+			int ea_reg = OP_EA_REG(opcode);
+
+			if (ea_mode == 2) {
+				/* LEA (An), An - just copy address reg */
+				emit_load_areg(REG_TMP0, ea_reg);
+				emit_store_areg(an, REG_TMP0);
+				*cycles_out = 4;
+				return 2;
+			}
+			if (ea_mode == 5) {
+				/* LEA d16(An), An */
+				s16 disp = (s16)fetch_68k_word(pc + 2);
+				emit_load_areg(REG_TMP0, ea_reg);
+				EMIT(MIPS_ADDIU(REG_TMP0, REG_TMP0, disp));
+				emit_store_areg(an, REG_TMP0);
+				*cycles_out = 8;
+				return 4;
+			}
+			if (ea_mode == 7 && ea_reg == 2) {
+				/* LEA d16(PC), An */
+				s16 disp = (s16)fetch_68k_word(pc + 2);
+				emit_load_imm32(REG_TMP0, (pc + 2 + disp) & 0xffffff);
+				emit_store_areg(an, REG_TMP0);
+				*cycles_out = 8;
+				return 4;
+			}
+		}
+
 		return -1;
 	}
 
@@ -441,10 +610,191 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		return -1;
 	}
 
+	case 0x5: /* ADDQ / SUBQ / Scc / DBcc */
+	{
+		int data = (opcode >> 9) & 7;
+		if (data == 0) data = 8; /* 0 encodes 8 */
+		int sz = OP_SIZE(opcode);
+		int ea_mode = OP_EA_MODE(opcode);
+		int ea_reg = OP_EA_REG(opcode);
+
+		if ((opcode & 0x0100) == 0 && sz == 2 && ea_mode == 0) {
+			/* ADDQ.L #data, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP0, data));
+			emit_store_dreg(ea_reg, REG_TMP1);
+			emit_update_nz_long(REG_TMP1);
+			EMIT(MIPS_SLTU(REG_TMP2, REG_TMP1, REG_TMP0));
+			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
+			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_X, REG_CTX));
+			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
+			*cycles_out = 4;
+			return 2;
+		}
+		if ((opcode & 0x0100) && sz == 2 && ea_mode == 0) {
+			/* SUBQ.L #data, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP0, -data));
+			emit_store_dreg(ea_reg, REG_TMP1);
+			emit_update_nz_long(REG_TMP1);
+			emit_load_imm32(REG_TMP2, data);
+			EMIT(MIPS_SLTU(REG_TMP2, REG_TMP0, REG_TMP2));
+			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
+			EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_X, REG_CTX));
+			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
+			*cycles_out = 4;
+			return 2;
+		}
+		/* ADDQ/SUBQ to An (no flags) */
+		if ((opcode & 0x0100) == 0 && sz == 2 && ea_mode == 1) {
+			emit_load_areg(REG_TMP0, ea_reg);
+			EMIT(MIPS_ADDIU(REG_TMP0, REG_TMP0, data));
+			emit_store_areg(ea_reg, REG_TMP0);
+			*cycles_out = 4;
+			return 2;
+		}
+		if ((opcode & 0x0100) && sz == 2 && ea_mode == 1) {
+			emit_load_areg(REG_TMP0, ea_reg);
+			EMIT(MIPS_ADDIU(REG_TMP0, REG_TMP0, -data));
+			emit_store_areg(ea_reg, REG_TMP0);
+			*cycles_out = 4;
+			return 2;
+		}
+		return -1;
+	}
+
 	case 0x6: /* Bcc / BRA / BSR */
 	{
-		/* Branch instructions end the block */
+		/* Branches end the block - but we compile a longer block by
+		 * not bailing. Instead, end the block here and let the
+		 * dispatcher handle the branch target on next call. */
 		return -1;
+	}
+
+	case 0x0: /* ORI/ANDI/SUBI/ADDI/CMPI to Dn */
+	{
+		int sub_op = (opcode >> 9) & 7;
+		int sz = OP_SIZE(opcode);
+		int ea_mode = OP_EA_MODE(opcode);
+		int ea_reg = OP_EA_REG(opcode);
+
+		if (ea_mode != 0 || sz != 2)
+			return -1; /* only Dn, long for now */
+
+		u32 imm;
+		imm = (fetch_68k_word(pc+2) << 16) | fetch_68k_word(pc+4);
+
+		switch (sub_op) {
+		case 0: /* ORI.L #imm, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			emit_load_imm32(REG_TMP1, imm);
+			EMIT(MIPS_OR(REG_TMP0, REG_TMP0, REG_TMP1));
+			emit_store_dreg(ea_reg, REG_TMP0);
+			emit_update_nz_long(REG_TMP0);
+			emit_clear_vc();
+			*cycles_out = 16;
+			return 6;
+		case 1: /* ANDI.L #imm, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			emit_load_imm32(REG_TMP1, imm);
+			EMIT(MIPS_AND(REG_TMP0, REG_TMP0, REG_TMP1));
+			emit_store_dreg(ea_reg, REG_TMP0);
+			emit_update_nz_long(REG_TMP0);
+			emit_clear_vc();
+			*cycles_out = 16;
+			return 6;
+		case 2: /* SUBI.L #imm, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			emit_load_imm32(REG_TMP1, imm);
+			EMIT(MIPS_SUBU(REG_TMP2, REG_TMP0, REG_TMP1));
+			emit_store_dreg(ea_reg, REG_TMP2);
+			emit_update_nz_long(REG_TMP2);
+			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP0, REG_TMP1));
+			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
+			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_X, REG_CTX));
+			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
+			*cycles_out = 16;
+			return 6;
+		case 3: /* ADDI.L #imm, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			emit_load_imm32(REG_TMP1, imm);
+			EMIT(MIPS_ADDU(REG_TMP2, REG_TMP0, REG_TMP1));
+			emit_store_dreg(ea_reg, REG_TMP2);
+			emit_update_nz_long(REG_TMP2);
+			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP2, REG_TMP0));
+			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
+			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_X, REG_CTX));
+			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
+			*cycles_out = 16;
+			return 6;
+		case 6: /* CMPI.L #imm, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			emit_load_imm32(REG_TMP1, imm);
+			EMIT(MIPS_SUBU(REG_TMP2, REG_TMP0, REG_TMP1));
+			emit_update_nz_long(REG_TMP2);
+			EMIT(MIPS_SLTU(REG_TMP3, REG_TMP0, REG_TMP1));
+			EMIT(MIPS_SW(REG_TMP3, CTX_OFF_FLAG_C, REG_CTX));
+			EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
+			*cycles_out = 14;
+			return 6;
+		case 5: /* EORI.L #imm, Dn */
+			emit_load_dreg(REG_TMP0, ea_reg);
+			emit_load_imm32(REG_TMP1, imm);
+			EMIT(MIPS_XOR(REG_TMP0, REG_TMP0, REG_TMP1));
+			emit_store_dreg(ea_reg, REG_TMP0);
+			emit_update_nz_long(REG_TMP0);
+			emit_clear_vc();
+			*cycles_out = 16;
+			return 6;
+		}
+		return -1;
+	}
+
+	case 0xe: /* Shift/Rotate */
+	{
+		int count_or_reg = (opcode >> 9) & 7;
+		int dr = (opcode >> 8) & 1;  /* 0=right, 1=left */
+		int sz = OP_SIZE(opcode);
+		int ir = (opcode >> 5) & 1;  /* 0=count, 1=register */
+		int type = (opcode >> 3) & 3;
+		int reg = opcode & 7;
+
+		/* Only immediate count, long size, register operand for now */
+		if (sz != 2 || ir != 0)
+			return -1;
+
+		int count = count_or_reg;
+		if (count == 0) count = 8;
+
+		emit_load_dreg(REG_TMP0, reg);
+
+		if (type == 0) { /* ASR/ASL */
+			if (dr) /* left */
+				EMIT(MIPS_SLL(REG_TMP1, REG_TMP0, count));
+			else    /* right */
+				EMIT(MIPS_SRA(REG_TMP1, REG_TMP0, count));
+		} else if (type == 1) { /* LSR/LSL */
+			if (dr)
+				EMIT(MIPS_SLL(REG_TMP1, REG_TMP0, count));
+			else
+				EMIT(MIPS_SRL(REG_TMP1, REG_TMP0, count));
+		} else {
+			return -1;
+		}
+
+		emit_store_dreg(reg, REG_TMP1);
+		emit_update_nz_long(REG_TMP1);
+		/* Simplified: C = last bit shifted out, V = 0 */
+		if (dr)
+			EMIT(MIPS_SRL(REG_TMP2, REG_TMP0, 32 - count));
+		else
+			EMIT(MIPS_SRL(REG_TMP2, REG_TMP0, count - 1));
+		EMIT(MIPS_ANDI(REG_TMP2, REG_TMP2, 1));
+		EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_C, REG_CTX));
+		EMIT(MIPS_SW(REG_TMP2, CTX_OFF_FLAG_X, REG_CTX));
+		EMIT(MIPS_SW(Z0, CTX_OFF_FLAG_V, REG_CTX));
+		*cycles_out = 6 + 2 * count;
+		return 2;
 	}
 
 	default:
