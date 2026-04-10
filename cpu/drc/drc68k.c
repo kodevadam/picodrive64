@@ -787,37 +787,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_areg(dst_r, REG_TMP0);
 			*cycles_out = 4;
 			return 2 + extra_words;
-		} else if (dst_mode == 2) {
-			/* (An) - register indirect write */
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
-		} else if (dst_mode == 5) {
-			/* d16(An) - displacement write */
-			s16 disp = (s16)fetch_68k_word(pc + 2 + extra_words);
-			extra_words += 2;
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDIU(4, 4, disp));
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
-		} else if (dst_mode == 3) {
-			/* (An)+ post-increment write */
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
-			emit_load_areg(REG_TMP1, dst_r);
-			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? 4 : 2));
-			emit_store_areg(dst_r, REG_TMP1);
-		} else if (dst_mode == 4) {
-			/* -(An) pre-decrement write */
-			emit_load_areg(REG_TMP1, dst_r);
-			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? -4 : -2));
-			emit_store_areg(dst_r, REG_TMP1);
-			EMIT(MIPS_ADDU(4, REG_TMP1, Z0));
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
 		} else {
-			return -1;
+			return -1; /* memory writes disabled - reads only */
 		}
 
 		emit_update_nz_long(REG_TMP0);
