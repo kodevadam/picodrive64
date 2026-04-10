@@ -538,13 +538,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 				emit_load_imm32(REG_TMP0, (s16)imm);
 				extra_words = 2;
 			}
-		} else if (src_mode == 2) {
-			/* (An) - simplest memory read */
-			emit_load_areg(4, src_r);
-			if (op_size == 2) emit_safe_read32(); else emit_safe_read16();
-			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
-			return -1; /* all other memory modes disabled for testing */
+			return -1; /* Memory modes need inline fast-path to be worthwhile */
 		}
 
 		/* Store to destination.
