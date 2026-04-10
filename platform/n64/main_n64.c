@@ -85,10 +85,14 @@ int main(int argc, char *argv[])
 	init_color_lut();
 
 	/*
-	 * 16-bit renderer (proven working, correct colors)
-	 * + all safe performance optimizations
+	 * Tier 1 performance: maximum CPU savings
+	 * - No sound chips (FM/PSG/DAC all off)
+	 * - Z80 disabled (only runs sound, wastes ~15-20% CPU when muted)
+	 * - VDP FIFO timing disabled
+	 * - Sprite limit disabled
+	 * - Idle loop detection disabled
 	 */
-	PicoIn.opt  = 0;                     /* no sound = massive CPU savings */
+	PicoIn.opt  = 0;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
@@ -124,15 +128,33 @@ int main(int argc, char *argv[])
 	display_close();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 
+	/* FPS counter */
+	int fps_count = 0;
+	int fps_display = 0;
+	unsigned int fps_timer = timer_ticks();
+	char fps_buf[16];
+
 	/* Main loop */
 	for (;;) {
 		PicoFrame();
+		fps_count++;
+
+		/* Update FPS display every second */
+		unsigned int now = timer_ticks();
+		if (TICKS_TO_MS(now - fps_timer) >= 1000) {
+			fps_display = fps_count;
+			fps_count = 0;
+			fps_timer = now;
+		}
 
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
 				blit_frame(fb);
+				/* Draw FPS counter in top-left */
+				sprintf(fps_buf, "%d FPS", fps_display);
+				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
 		}

@@ -173,8 +173,13 @@ set_platform()
     ARCH=mips64
     CFLAGS="$CFLAGS -DN64 -I${N64_INST:-/opt/libdragon}/mips64-elf/include"
     LDFLAGS="$LDFLAGS -L${N64_INST:-/opt/libdragon}/mips64-elf/lib -T${N64_INST:-/opt/libdragon}/mips64-elf/lib/n64.ld -ldragon -lc -lm -ldragonsys -Wl,--wrap,__do_global_ctors"
-    # Disable LTO - causes symbol resolution issues with libdragon inline functions
-    CFLAGS="$CFLAGS -fno-lto"
+    # Aggressive optimization for VR4300
+    # -fno-lto: required (libdragon inline symbol issues)
+    # -fomit-frame-pointer: free register for MIPS (saves s8/fp)
+    # -ffast-math: faster FP (not used much but helps where it does)
+    # -finline-limit=300: inline more aggressively for hot interpreter loops
+    # -funroll-loops: unroll small loops (helps 68k opcode dispatch)
+    CFLAGS="$CFLAGS -fno-lto -fomit-frame-pointer -ffast-math -finline-limit=300 -funroll-loops"
     sound_drivers=""
     have_libavcodec="no"
     ;;
