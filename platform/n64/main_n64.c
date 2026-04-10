@@ -21,28 +21,14 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
-/* Palette cache for 8-bit renderer */
-static uint16_t pal_cache_rgba[0x100];
-
-/* Frame skip state */
+/* Frame skip: 0=none, 1=every other, 2=every 3rd */
 static int frame_count = 0;
-#define FRAME_SKIP 1  /* render every other frame: 0=none, 1=skip 1, 2=skip 2 */
+#define FRAME_SKIP 1
 
-/* Convert PicoDrive palette (RGB555) to N64 (RGBA5551) - batch */
-static void update_palette_rgba(void)
+/* Fast RGB555 to RGBA5551: just shift left 1 and set alpha bit */
+static void blit_rgb555_to_display(surface_t *fb)
 {
-	unsigned short *pal = Pico.est.HighPal;
-	for (int i = 0; i < 0x100; i++) {
-		uint16_t c = pal[i];
-		/* RGB555: 0RRRRRGG GGGBBBBB -> RGBA5551: RRRRRGGG GGBBBBBA */
-		pal_cache_rgba[i] = (c << 1) | 1;
-	}
-}
-
-/* Fast 8-bit to RGBA5551 blit using cached palette */
-static void blit_8bit_to_display(surface_t *fb)
-{
-	unsigned char *src = Pico.est.Draw2FB + 328 * 8 + 8;
+	uint16_t *src = screen_buffer;
 	uint16_t *dst = (uint16_t *)fb->buffer;
 	int h = g_screen_height;
 	int w = g_screen_width;
@@ -52,18 +38,16 @@ static void blit_8bit_to_display(surface_t *fb)
 		memset(dst, 0, 320 * 240 * 2);
 
 	for (int y = 0; y < h; y++) {
+		uint16_t *s = &src[y * 320];
 		uint16_t *d = &dst[(y + y_off) * 320];
-		unsigned char *s = &src[y * 328];
-		/* Unrolled 4-pixel inner loop */
-		int x;
-		for (x = 0; x + 3 < w; x += 4) {
-			d[x]   = pal_cache_rgba[s[x]];
-			d[x+1] = pal_cache_rgba[s[x+1]];
-			d[x+2] = pal_cache_rgba[s[x+2]];
-			d[x+3] = pal_cache_rgba[s[x+3]];
+		/* RGB555 (0RRRRRGGGGGBBBBB) -> RGBA5551 (RRRRRGGGGBBBBBA) */
+		/* Just shift left by 1 and OR with 1 for alpha */
+		for (int x = 0; x < w; x += 4) {
+			d[x]   = (s[x]   << 1) | 1;
+			d[x+1] = (s[x+1] << 1) | 1;
+			d[x+2] = (s[x+2] << 1) | 1;
+			d[x+3] = (s[x+3] << 1) | 1;
 		}
-		for (; x < w; x++)
-			d[x] = pal_cache_rgba[s[x]];
 	}
 }
 
@@ -88,21 +72,20 @@ int main(int argc, char *argv[])
 	printf("  Initializing...\n");
 	console_render();
 
-	/* Init PicoDrive core */
 	PicoInit();
 
 	/*
-	 * Performance tuning for 93.75 MHz VR4300:
-	 * - ALT_RENDERER: fast 8-bit renderer (much less CPU than 16-bit accurate)
-	 * - Disable FM DAC: saves significant CPU in YM2612
-	 * - Disable stereo: halves audio mixing work
-	 * - Disable sound filter: saves CPU
-	 * - 11025 Hz audio: quarter the mixing work vs 44100
-	 * - Disable idle detection: small overhead but causes issues on some games
+	 * Performance tuning:
+	 * - 16-bit accurate renderer (correct colors, writes to screen_buffer)
+	 * - FM + PSG enabled (authentic sound)
+	 * - Mono 11025 Hz (minimize audio CPU)
+	 * - VDP FIFO disabled (skip expensive timing)
+	 * - Sprite limit disabled (avoids overhead)
+	 * - Frame skip 1 (render every other frame)
 	 */
-	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG;
-	PicoIn.opt |= POPT_ALT_RENDERER;
-	PicoIn.opt |= POPT_DIS_VDP_FIFO;    /* skip FIFO timing for speed */
+	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG | POPT_EN_FM_DAC;
+	PicoIn.opt |= POPT_DIS_VDP_FIFO;
+	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.sndRate = 11025;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
@@ -123,39 +106,32 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* 8-bit alt renderer: output goes to Pico.est.Draw2FB, not screen_buffer */
-	PicoDrawSetOutFormat(PDF_NONE, 0);
+	/* 16-bit RGB555 renderer: writes directly to screen_buffer */
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
 	printf("  Running!\n");
 	console_render();
-
 	for (volatile int i = 0; i < 2000000; i++) {}
 
-	/* Reinit display for framebuffer mode */
 	console_close();
 	display_close();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 
 	/* === Main emulation loop === */
 	for (;;) {
-		/* Always run emulation (for game logic / audio) */
 		PicoFrame();
 
-		/* Only render to display every N+1 frames */
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
-
-			if (Pico.m.dirtyPal)
-				update_palette_rgba();
-
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
-				blit_8bit_to_display(fb);
+				blit_rgb555_to_display(fb);
 				display_show(fb);
 			}
 		}
 
-		/* Read input (every frame for responsiveness) */
+		/* Input every frame */
 		joypad_poll();
 		joypad_buttons_t btns = joypad_get_buttons_pressed(JOYPAD_PORT_1);
 		joypad_inputs_t inputs = joypad_get_inputs(JOYPAD_PORT_1);
@@ -177,7 +153,7 @@ int main(int argc, char *argv[])
 	}
 }
 
-/* Platform stubs required by PicoDrive core */
+/* Platform stubs */
 void emu_video_mode_change(int start_line, int line_count, int start_col, int col_count)
 {
 	g_screen_width = col_count;
@@ -189,13 +165,10 @@ void lprintf(const char *fmt, ...) { }
 
 void *plat_mmap(unsigned long addr, size_t size, int need_exec, int is_fixed)
 { return calloc(1, size); }
-
 void *plat_mremap(void *ptr, size_t oldsize, size_t newsize)
 { return realloc(ptr, newsize); }
-
 void plat_munmap(void *ptr, size_t size)
 { free(ptr); }
-
 void *plat_mem_get_for_drc(size_t size) { return NULL; }
 int plat_mem_set_exec(void *ptr, size_t size) { return 0; }
 
