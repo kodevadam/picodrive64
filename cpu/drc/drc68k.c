@@ -771,21 +771,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_areg(dst_r, REG_TMP0);
 			*cycles_out = 4;
 			return 2 + extra_words;
-		} else if (dst_mode == 2) {
-			/* (An) - register indirect write */
-			emit_load_areg(4, dst_r);  /* a0 = address */
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0)); /* a1 = data */
-			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
-		} else if (dst_mode == 5) {
-			/* d16(An) - displacement write */
-			s16 disp = (s16)fetch_68k_word(pc + 2 + extra_words);
-			extra_words += 2;
-			emit_load_areg(4, dst_r);
-			EMIT(MIPS_ADDIU(4, 4, disp));
-			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
-			if (op_size == 2) emit_inline_write32(); else emit_inline_write16();
 		} else {
-			return -1;
+			return -1; /* writes disabled - eventual crash in FAME */
 		}
 
 		emit_update_nz_long(REG_TMP0);
