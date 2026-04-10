@@ -269,6 +269,12 @@ use_fame = 1
 use_cz80 = 1
 use_sh2drc = 0
 use_svpdrc = 0
+ifeq "$(N64_EMBEDDED_ROM)" "1"
+# Standalone mode: single file has main + all platform stubs
+OBJS += platform/n64/main_n64.o
+N64_STANDALONE = 1
+else
+# Full frontend mode
 OBJS += platform/n64/plat.o
 OBJS += platform/n64/emu.o
 OBJS += platform/n64/in_n64.o
@@ -276,10 +282,6 @@ OBJS += platform/n64/menu_n64.o
 OBJS += platform/n64/readpng_n64.o
 OBJS += platform/n64/sndout_n64.o
 USE_FRONTEND = 1
-ifeq "$(N64_EMBEDDED_ROM)" "1"
-# Replace common main with N64 standalone main (embedded ROM, auto-start)
-OBJS += platform/n64/main_n64.o
-N64_STANDALONE = 1
 endif
 N64_BUILD = 1
 endif
