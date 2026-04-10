@@ -1,6 +1,6 @@
 /*
  * PicoDrive N64 - Standalone main with embedded ROM
- * Optimized for VR4300 at 93.75 MHz
+ * Uses RDP hardware for palette lookup and framebuffer blit
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,16 +21,67 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
-/* Frame skip: 0=none, 1=every other, 2=every 3rd */
+/* RGBA5551 palette for RDP TLUT - aligned for DMA */
+static uint16_t __attribute__((aligned(8))) rdp_palette[256];
+
+/* Frame skip */
 static int frame_count = 0;
 #define FRAME_SKIP 1
 
-/* BGR555 to RGBA5551 conversion
- * PicoDrive with USE_BGR555: 0BBBBBGGGGGRRRRR
- * N64 RGBA5551:              RRRRRGGGGGBBBBBA
- * R=bits 0-4, G=bits 5-9, B=bits 10-14 of source
- */
-static void blit_to_display(surface_t *fb)
+/* Convert PicoDrive BGR555 palette to N64 RGBA5551 for RDP TLUT */
+static void update_rdp_palette(void)
+{
+	unsigned short *src = Pico.est.HighPal;
+	for (int i = 0; i < 256; i++) {
+		uint16_t c = src[i];
+		uint16_t r = (c      ) & 0x1f;
+		uint16_t g = (c >>  5) & 0x1f;
+		uint16_t b = (c >> 10) & 0x1f;
+		rdp_palette[i] = (r << 11) | (g << 6) | (b << 1) | 1;
+	}
+}
+
+/* Blit using RDP hardware: CI8 texture + TLUT palette lookup */
+static void rdp_blit_frame(surface_t *fb)
+{
+	unsigned char *draw2fb = Pico.est.Draw2FB;
+	int h = g_screen_height;
+	int w = g_screen_width;
+	int y_off = (240 - h) / 2;
+
+	/* Create a surface wrapping PicoDrive's 8-bit framebuffer
+	 * Draw2FB layout: 328 bytes per line, 8-line top border, 8-pixel left border */
+	surface_t emu_surf = surface_make(
+		draw2fb + 328 * 8 + 8,  /* skip borders */
+		FMT_CI8, w, h, 328      /* stride is 328, not width */
+	);
+
+	/* Attach RDP to the display framebuffer */
+	rdpq_attach(fb, NULL);
+
+	/* Clear borders if needed */
+	if (y_off > 0) {
+		rdpq_set_mode_fill(RGBA32(0, 0, 0, 0));
+		rdpq_fill_rectangle(0, 0, 320, y_off);
+		rdpq_fill_rectangle(0, 240 - y_off, 320, 240);
+	}
+
+	/* Upload palette to RDP TLUT */
+	rdpq_tex_upload_tlut(rdp_palette, 0, 256);
+
+	/* Set standard mode with palette lookup */
+	rdpq_set_mode_standard();
+	rdpq_mode_tlut(TLUT_RGBA16);
+
+	/* Blit the 8-bit texture - RDP does palette lookup in hardware */
+	rdpq_tex_blit(&emu_surf, 0, y_off, NULL);
+
+	/* Detach (queues the work, doesn't wait) */
+	rdpq_detach();
+}
+
+/* CPU fallback blit for when RDP can't be used */
+static void cpu_blit_frame(surface_t *fb)
 {
 	uint16_t *src = screen_buffer;
 	uint16_t *dst = (uint16_t *)fb->buffer;
@@ -46,11 +97,9 @@ static void blit_to_display(surface_t *fb)
 		uint16_t *d = &dst[(y + y_off) * 320];
 		for (int x = 0; x < w; x++) {
 			uint16_t c = s[x];
-			/* Extract from BGR555 */
-			uint16_t r = (c      ) & 0x1f;  /* bits 0-4 */
-			uint16_t g = (c >>  5) & 0x1f;  /* bits 5-9 */
-			uint16_t b = (c >> 10) & 0x1f;  /* bits 10-14 */
-			/* Pack as RGBA5551 */
+			uint16_t r = (c      ) & 0x1f;
+			uint16_t g = (c >>  5) & 0x1f;
+			uint16_t b = (c >> 10) & 0x1f;
 			d[x] = (r << 11) | (g << 6) | (b << 1) | 1;
 		}
 	}
@@ -59,37 +108,32 @@ static void blit_to_display(surface_t *fb)
 int main(int argc, char *argv[])
 {
 	unsigned char *rom_copy;
+	int use_rdp_blit = 1;
 
 	g_argv = argv;
 	g_screen_ptr = screen_buffer;
 
-	/* Expansion Pak (8 MB) required */
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
 
-	/* Show boot message */
+	/* Boot message */
 	console_init();
 	console_set_render_mode(RENDER_MANUAL);
-	printf("\n\n");
-	printf("  PicoDrive64\n\n");
+	printf("\n\n  PicoDrive64 [RDP accelerated]\n\n");
 	printf("  ROM: %s (%d KB)\n", EMBEDDED_ROM_NAME, EMBEDDED_ROM_SIZE / 1024);
-	printf("  RAM: %d KB\n\n", get_memory_size() / 1024);
+	printf("  RAM: %d KB\n", get_memory_size() / 1024);
 	printf("  Initializing...\n");
 	console_render();
 
 	PicoInit();
 
 	/*
-	 * Performance tuning:
-	 * - 16-bit accurate renderer (correct colors, writes to screen_buffer)
-	 * - FM + PSG enabled (authentic sound)
-	 * - Mono 11025 Hz (minimize audio CPU)
-	 * - VDP FIFO disabled (skip expensive timing)
-	 * - Sprite limit disabled (avoids overhead)
-	 * - Frame skip 1 (render every other frame)
+	 * Use 8-bit ALT_RENDERER (fast) + RDP hardware palette blit.
+	 * CPU only runs the emulation; RDP handles all display work.
 	 */
 	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG | POPT_EN_FM_DAC;
-	PicoIn.opt |= POPT_DIS_VDP_FIFO;
+	PicoIn.opt |= POPT_ALT_RENDERER;    /* 8-bit fast renderer */
+	PicoIn.opt |= POPT_DIS_VDP_FIFO;    /* skip FIFO timing */
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.sndRate = 11025;
 
@@ -111,11 +155,13 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* 16-bit RGB555 renderer: writes directly to screen_buffer */
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	/* Set up 8-bit renderer - output goes to Pico.est.Draw2FB */
+	PicoDrawSetOutFormat(PDF_NONE, 0);
+
+	/* Also set up 16-bit buffer as fallback */
 	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
-	printf("  Running!\n");
+	printf("  Running! (RDP blit)\n");
 	console_render();
 	for (volatile int i = 0; i < 2000000; i++) {}
 
@@ -125,14 +171,27 @@ int main(int argc, char *argv[])
 
 	/* === Main emulation loop === */
 	for (;;) {
+		/* Run emulation */
 		PicoFrame();
 
+		/* Only render to display every N+1 frames */
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
+
+			/* Update palette if changed */
+			if (Pico.m.dirtyPal) {
+				PicoDrawUpdateHighPal();
+				update_rdp_palette();
+			}
+
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
-				blit_to_display(fb);
-				display_show(fb);
+				if (use_rdp_blit)
+					rdp_blit_frame(fb);
+				else {
+					cpu_blit_frame(fb);
+					display_show(fb);
+				}
 			}
 		}
 
