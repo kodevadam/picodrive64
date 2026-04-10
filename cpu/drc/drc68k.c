@@ -804,8 +804,10 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			*cycles_out = 10;
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
-		/* All conditional branches fall back to FAME for now */
-		return -1;
+		if (cond != 0) {
+			/* Conditional branches disabled - flag evaluation buggy */
+			return -1;
+		}
 
 		/*
 		 * Bcc - conditional branch.
