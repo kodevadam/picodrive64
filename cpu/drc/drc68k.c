@@ -745,6 +745,22 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			EMIT(MIPS_ADDIU(4, 4, disp));
 			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
 			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 3) {
+			/* (An)+ post-increment read */
+			emit_load_areg(4, src_r);
+			emit_load_areg(REG_TMP1, src_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? 4 : 2));
+			emit_store_areg(src_r, REG_TMP1);
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
+		} else if (src_mode == 4) {
+			/* -(An) pre-decrement read */
+			emit_load_areg(REG_TMP1, src_r);
+			EMIT(MIPS_ADDIU(REG_TMP1, REG_TMP1, op_size == 2 ? -4 : -2));
+			emit_store_areg(src_r, REG_TMP1);
+			EMIT(MIPS_ADDU(4, REG_TMP1, Z0));
+			if (op_size == 2) emit_inline_read32(); else emit_inline_read16();
+			EMIT(MIPS_ADDU(REG_TMP0, 2, Z0));
 		} else {
 			return -1;
 		}
