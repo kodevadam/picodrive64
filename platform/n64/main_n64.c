@@ -9,6 +9,7 @@
 #include <pico/pico_int.h>
 
 #include "../common/input_pico.h"
+#include "../../cpu/drc/drc68k.h"
 #include "n64.h"
 #include "embedded_rom.h"
 
@@ -153,7 +154,10 @@ int main(int argc, char *argv[])
 			if (fb && fb->buffer) {
 				blit_frame(fb);
 				/* Draw FPS counter in top-left */
-				sprintf(fps_buf, "%d FPS", fps_display);
+				sprintf(fps_buf, "%dFPS B%d X%d",
+				fps_display,
+				(int)drc68k.blocks_compiled,
+				(int)drc68k.blocks_executed);
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
