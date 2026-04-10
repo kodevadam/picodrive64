@@ -24,9 +24,6 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 /* RGBA5551 palette for RDP TLUT - aligned for DMA */
 static uint16_t __attribute__((aligned(8))) rdp_palette[256];
 
-/* RDP-compatible RGBA5551 surface - allocated by surface_alloc */
-static surface_t rdp_surface;
-static int rdp_surface_inited = 0;
 
 /* Frame skip */
 static int frame_count = 0;
@@ -46,54 +43,35 @@ static void update_rdp_palette(void)
 }
 
 /*
- * RDP-accelerated blit:
- * 1. CPU: palette lookup 8-bit -> RGBA5551 (cheap, just array index)
- * 2. CPU: cache writeback
- * 3. RDP: blit RGBA16 surface to display (hardware DMA, no CPU copy)
- *
- * This avoids CI8+TLUT TMEM complexity. The palette lookup is fast
- * (256-entry LUT, ~70K pixels) and the RDP blit frees the CPU from
- * the actual framebuffer transfer.
+ * Fast CPU blit: 8-bit indexed Draw2FB + palette -> display RGBA5551
+ * The palette lookup is just an array index - much cheaper than
+ * the 16-bit renderer's per-pixel RGB channel extraction.
  */
-static void rdp_blit_frame(surface_t *fb)
+static void blit_frame(surface_t *fb)
 {
 	unsigned char *src = Pico.est.Draw2FB + 328 * 8 + 8;
+	uint16_t *dst = (uint16_t *)fb->buffer;
 	int h = g_screen_height;
 	int w = g_screen_width;
 	int y_off = (240 - h) / 2;
 
-	/* Alloc RGBA16 surface once (RDP-compatible alignment) */
-	if (!rdp_surface_inited) {
-		rdp_surface = surface_alloc(FMT_RGBA16, w, h);
-		rdp_surface_inited = 1;
-	}
+	if (y_off > 0)
+		memset(dst, 0, 320 * 240 * 2);
 
-	/* CPU: fast palette lookup (8-bit indexed -> RGBA5551) */
-	uint16_t *dst = (uint16_t *)rdp_surface.buffer;
-	int dst_stride = rdp_surface.stride / 2; /* stride in pixels */
 	for (int y = 0; y < h; y++) {
 		unsigned char *s = &src[y * 328];
-		uint16_t *d = &dst[y * dst_stride];
-		for (int x = 0; x < w; x++)
+		uint16_t *d = &dst[(y + y_off) * 320];
+		/* 4-pixel unrolled palette lookup */
+		int x;
+		for (x = 0; x + 3 < w; x += 4) {
+			d[x]   = rdp_palette[s[x]];
+			d[x+1] = rdp_palette[s[x+1]];
+			d[x+2] = rdp_palette[s[x+2]];
+			d[x+3] = rdp_palette[s[x+3]];
+		}
+		for (; x < w; x++)
 			d[x] = rdp_palette[s[x]];
 	}
-
-	/* Flush to RDRAM for RDP DMA */
-	data_cache_hit_writeback(rdp_surface.buffer, rdp_surface.stride * h);
-
-	/* RDP: blit to display framebuffer */
-	rdpq_attach(fb, NULL);
-
-	if (y_off > 0) {
-		rdpq_set_mode_fill(RGBA32(0, 0, 0, 255));
-		rdpq_fill_rectangle(0, 0, 320, y_off);
-		rdpq_fill_rectangle(0, 240 - y_off, 320, 240);
-	}
-
-	rdpq_set_mode_copy(false);
-	rdpq_tex_blit(&rdp_surface, 0, y_off, NULL);
-
-	rdpq_detach_show();
 }
 
 
@@ -104,7 +82,6 @@ int main(int argc, char *argv[])
 	g_screen_ptr = screen_buffer;
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
-	rdpq_init();
 	joypad_init();
 
 	/* Boot message */
@@ -177,7 +154,8 @@ int main(int argc, char *argv[])
 
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
-				rdp_blit_frame(fb);
+				blit_frame(fb);
+				display_show(fb);
 			}
 		}
 
