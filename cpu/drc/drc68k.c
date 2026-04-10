@@ -363,12 +363,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 				emit_load_imm32(REG_TMP0, (s16)imm);
 				extra_words = 2;
 			}
-		} else {
-			/* All memory addressing modes disabled until JALR bugs fixed */
-			return -1;
-		}
-#if 0 /* Memory modes disabled */
-		if (src_mode == 2) {
+		} else if (src_mode == 2) {
 			/* (An) */
 			emit_load_areg(4, src_r);
 			if (op_size == 2) emit_mem_read_long(); else emit_mem_read_word();
@@ -415,7 +410,6 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		} else {
 			return -1;
 		}
-#endif /* Memory modes disabled */
 
 		/* Store to destination - only register modes */
 		if (dst_mode == 0) {
@@ -436,11 +430,7 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			emit_store_areg(dst_r, REG_TMP0);
 			*cycles_out = (src_mode >= 2) ? 12 : 4;
 			return 2 + extra_words;
-		} else {
-			return -1;
-		}
-#if 0 /* Memory dest modes disabled */
-		if (dst_mode == 2) {
+		} else if (dst_mode == 2) {
 			/* (An) */
 			emit_load_areg(4, dst_r);
 			EMIT(MIPS_ADDU(5, REG_TMP0, Z0));
@@ -474,7 +464,6 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 		} else {
 			return -1;
 		}
-#endif /* Memory dest modes disabled */
 
 		emit_update_nz_long(REG_TMP0);
 		emit_clear_vc();
