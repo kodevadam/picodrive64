@@ -47,21 +47,22 @@ static void rdp_blit_frame(surface_t *fb)
 	unsigned char *draw2fb = Pico.est.Draw2FB;
 	int h = g_screen_height;
 	int w = g_screen_width;
+	int stride = 328; /* Draw2FB stride (LINE_WIDTH in draw2.c) */
 	int y_off = (240 - h) / 2;
+	unsigned char *pixels = draw2fb + stride * 8 + 8; /* skip 8-line/8-pixel border */
 
-	/* Create a surface wrapping PicoDrive's 8-bit framebuffer
-	 * Draw2FB layout: 328 bytes per line, 8-line top border, 8-pixel left border */
-	surface_t emu_surf = surface_make(
-		draw2fb + 328 * 8 + 8,  /* skip borders */
-		FMT_CI8, w, h, 328      /* stride is 328, not width */
-	);
+	/* Flush CPU data cache so RDP can DMA the pixel data */
+	data_cache_hit_writeback(pixels, stride * h);
+
+	/* Create a surface wrapping PicoDrive's 8-bit framebuffer */
+	surface_t emu_surf = surface_make(pixels, FMT_CI8, w, h, stride);
 
 	/* Attach RDP to the display framebuffer */
 	rdpq_attach(fb, NULL);
 
-	/* Clear borders if needed */
+	/* Clear if there are vertical borders */
 	if (y_off > 0) {
-		rdpq_set_mode_fill(RGBA32(0, 0, 0, 0));
+		rdpq_set_mode_fill(RGBA32(0, 0, 0, 255));
 		rdpq_fill_rectangle(0, 0, 320, y_off);
 		rdpq_fill_rectangle(0, 240 - y_off, 320, 240);
 	}
@@ -69,14 +70,14 @@ static void rdp_blit_frame(surface_t *fb)
 	/* Upload palette to RDP TLUT */
 	rdpq_tex_upload_tlut(rdp_palette, 0, 256);
 
-	/* Set standard mode with palette lookup */
-	rdpq_set_mode_standard();
+	/* Set copy mode with palette lookup - fastest for 1:1 blit */
+	rdpq_set_mode_copy(false);
 	rdpq_mode_tlut(TLUT_RGBA16);
 
 	/* Blit the 8-bit texture - RDP does palette lookup in hardware */
 	rdpq_tex_blit(&emu_surf, 0, y_off, NULL);
 
-	/* Detach and show (schedules display_show when RDP finishes) */
+	/* Detach and show */
 	rdpq_detach_show();
 }
 
