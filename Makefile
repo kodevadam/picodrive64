@@ -261,7 +261,8 @@ endif
 ifeq "$(PLATFORM)" "n64"
 # Nintendo 64 via libdragon (targets SummerCart64)
 # USE_BGR555 matches PS2 (also big-endian MIPS) - forces 5-5-5 color output
-CFLAGS += -DN64 -DUSE_BGR555 -DDRC_68K
+CFLAGS += -DN64 -DUSE_BGR555
+# DRC_68K disabled - needs more work on memory modes and flag correctness
 # Disable features that won't fit in N64 RAM
 no_32x = 1
 no_sms = 0
@@ -270,7 +271,7 @@ use_fame = 1
 use_cz80 = 1
 use_sh2drc = 0
 use_svpdrc = 0
-DRC_68K = 1
+# DRC_68K = 1
 ifeq "$(N64_EMBEDDED_ROM)" "1"
 # Standalone mode: single file has main + all platform stubs
 OBJS += platform/n64/main_n64.o
