@@ -777,12 +777,13 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			*cycles_out = 10;
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
-		if (cond == 1) {
-			/* BSR - branch to subroutine: too complex for now */
+		if (cond >= 2) {
+			/* Bcc - conditional branches disabled for now due to flag bugs.
+			 * Fall back to FAME for correct condition evaluation. */
 			return -1;
 		}
 
-		/* Bcc - conditional branch. End block with correct PC. */
+		/* (dead code for now - Bcc disabled above) */
 		/* Load flags from context */
 		EMIT(MIPS_LW(REG_TMP0, CTX_OFF_FLAG_NZ, REG_CTX));
 		EMIT(MIPS_LW(REG_TMP1, CTX_OFF_FLAG_N, REG_CTX));
