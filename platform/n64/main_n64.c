@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
 	PicoInit();
 
 	PicoIn.opt = POPT_EN_FM | POPT_EN_PSG | POPT_EN_STEREO | POPT_EN_FM_DAC;
-	PicoIn.opt |= POPT_ALT_RENDERER;
+	/* Use 16-bit accurate renderer - writes directly to our buffer */
 	PicoIn.sndRate = 22050;
 
 	printf("  Allocating ROM buffer...\n");
@@ -100,6 +100,21 @@ int main(int argc, char *argv[])
 	console_close();
 	display_close();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2, GAMMA_NONE, FILTERS_RESAMPLE);
+
+	/* Test: draw a red screen to verify display pipeline */
+	{
+		surface_t *fb = display_get();
+		if (fb && fb->buffer) {
+			uint16_t *dst = (uint16_t *)fb->buffer;
+			/* Fill with red (RGBA5551: R=31,G=0,B=0,A=1) */
+			uint16_t red = (31 << 11) | 1;
+			for (int i = 0; i < 320 * 240; i++)
+				dst[i] = red;
+			display_show(fb);
+		}
+		/* Show red for 2 seconds so we know display works */
+		for (volatile int i = 0; i < 10000000; i++) {}
+	}
 
 	/* Emulation loop */
 	for (;;) {
