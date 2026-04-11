@@ -204,67 +204,8 @@ TileFlipMaker_(pix_func,m)
 #define pix_just_write(x) \
   if (likely(t)) pd[x]=pal|t
 
-#ifdef N64
-/* N64 MIPS fast path: opaque tiles write 2 aligned words (no branches).
- * Check all 8 nibbles non-zero via subtraction trick. Falls back to
- * per-pixel for tiles with any transparent pixel. */
-static void TileNorm(unsigned char *pd, unsigned int pack, unsigned char pal)
-{
-	/* Check if all nibbles non-zero (fully opaque tile) */
-	u32 chk = pack - 0x11111111u;
-	chk &= ~pack;
-	if (likely(!(chk & 0x88888888u))) {
-		/* All opaque: 8 unconditional byte stores (no branches) */
-		pd[0] = pal | ((pack >> 12) & 0xf);
-		pd[1] = pal | ((pack >>  8) & 0xf);
-		pd[2] = pal | ((pack >>  4) & 0xf);
-		pd[3] = pal | ((pack      ) & 0xf);
-		pd[4] = pal | ((pack >> 28) & 0xf);
-		pd[5] = pal | ((pack >> 24) & 0xf);
-		pd[6] = pal | ((pack >> 20) & 0xf);
-		pd[7] = pal | ((pack >> 16) & 0xf);
-	} else {
-		unsigned char t;
-		t = (pack&0x0000f000)>>12; if (t) pd[0]=pal|t;
-		t = (pack&0x00000f00)>> 8; if (t) pd[1]=pal|t;
-		t = (pack&0x000000f0)>> 4; if (t) pd[2]=pal|t;
-		t = (pack&0x0000000f)    ; if (t) pd[3]=pal|t;
-		t = (pack&0xf0000000)>>28; if (t) pd[4]=pal|t;
-		t = (pack&0x0f000000)>>24; if (t) pd[5]=pal|t;
-		t = (pack&0x00f00000)>>20; if (t) pd[6]=pal|t;
-		t = (pack&0x000f0000)>>16; if (t) pd[7]=pal|t;
-	}
-}
-
-static void TileFlip(unsigned char *pd, unsigned int pack, unsigned char pal)
-{
-	u32 chk = pack - 0x11111111u;
-	chk &= ~pack;
-	if (likely(!(chk & 0x88888888u))) {
-		pd[0] = pal | ((pack >> 16) & 0xf);
-		pd[1] = pal | ((pack >> 20) & 0xf);
-		pd[2] = pal | ((pack >> 24) & 0xf);
-		pd[3] = pal | ((pack >> 28) & 0xf);
-		pd[4] = pal | ((pack      ) & 0xf);
-		pd[5] = pal | ((pack >>  4) & 0xf);
-		pd[6] = pal | ((pack >>  8) & 0xf);
-		pd[7] = pal | ((pack >> 12) & 0xf);
-	} else {
-		unsigned char t;
-		t = (pack&0x000f0000)>>16; if (t) pd[0]=pal|t;
-		t = (pack&0x00f00000)>>20; if (t) pd[1]=pal|t;
-		t = (pack&0x0f000000)>>24; if (t) pd[2]=pal|t;
-		t = (pack&0xf0000000)>>28; if (t) pd[3]=pal|t;
-		t = (pack&0x0000000f)    ; if (t) pd[4]=pal|t;
-		t = (pack&0x000000f0)>> 4; if (t) pd[5]=pal|t;
-		t = (pack&0x00000f00)>> 8; if (t) pd[6]=pal|t;
-		t = (pack&0x0000f000)>>12; if (t) pd[7]=pal|t;
-	}
-}
-#else
 TileNormMaker(TileNorm, pix_just_write)
 TileFlipMaker(TileFlip, pix_just_write)
-#endif
 
 #ifndef _ASM_DRAW_C
 
