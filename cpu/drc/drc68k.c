@@ -1217,8 +1217,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			*cycles_out = 10;
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
-		if (cond == 1 || cond >= 8) {
-			/* BSR and signed conditions (BGE/BLT/BGT/BLE/BPL/BMI) disabled */
+		if (cond != 0) {
+			/* All Bcc disabled - flag format incompatibility with FAME */
 			return -1;
 		}
 		/* BRA + BEQ/BNE + BCC/BCS enabled.
