@@ -155,10 +155,16 @@ int main(int argc, char *argv[])
 
 	/* Skip FinalizeLine (38% of VDP time!) - read directly from
 	 * HighCol (8-bit indexed) in blit and convert to RGBA5551.
-	 * This eliminates the double palette lookup:
 	 *   Before: HighCol->FinalizeLine(pal)->BGR555->blit(lut)->RGBA5551
 	 *   After:  HighCol->blit(pal)->RGBA5551 */
 	PicoDrawSetOutFormat(PDF_NONE, 0);
+	/* Must set internal buffer with stride so each scanline gets its
+	 * own memory. Without this, HighColIncrement=0 and all lines
+	 * render to the same buffer. */
+	{
+		static unsigned char highcol_buf[328 * 240];
+		PicoDrawSetInternalBuf(highcol_buf, 328);
+	}
 
 	printf("  Running!\n");
 	console_render();
