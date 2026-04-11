@@ -51,24 +51,6 @@
 extern unsigned int prof_vdp_layer_ticks;
 extern unsigned int prof_vdp_sprite_ticks;
 extern unsigned int prof_vdp_final_ticks;
-extern unsigned char vram_dirty_map[];
-
-/* Tile pack cache: read from cache if VRAM address is clean,
- * otherwise read from VRAM and update cache. 4KB total in L1. */
-#define N64_TILE_CACHE_READ(addr, pack) {				\
-  u32 _ci = (addr) & TILE_CACHE_MASK;					\
-  if (tile_pack_cache[_ci].addr == (addr) && !vram_dirty_map[(addr)>>1]) { \
-    pack = tile_pack_cache[_ci].pack;					\
-  } else {								\
-    pack = CPU_LE2(*(u32 *)(PicoMem.vram + (addr)));			\
-    tile_pack_cache[_ci].addr = (addr);					\
-    tile_pack_cache[_ci].pack = pack;					\
-    vram_dirty_map[(addr)>>1] = 0;					\
-  }									\
-}
-#else
-#define N64_TILE_CACHE_READ(addr, pack) \
-  pack = CPU_LE2(*(u32 *)(PicoMem.vram + (addr)));
 #endif
 
 #define FORCE	// layer forcing via debug register?
@@ -328,16 +310,6 @@ TileFlipMakerAS(TileFlipSH_AS_and, pix_sh_as_and)
 
 // --------------------------------------------
 
-#ifdef N64
-/* Tile pack cache: avoids L1 cache misses on scattered VRAM reads.
- * 512-entry direct-mapped, 4KB total - fits entirely in L1 cache.
- * Invalidated on VRAM writes via vram_dirty_map. */
-#define TILE_CACHE_BITS 9
-#define TILE_CACHE_SIZE (1 << TILE_CACHE_BITS)
-#define TILE_CACHE_MASK (TILE_CACHE_SIZE - 1)
-static struct { u32 addr; u32 pack; } tile_pack_cache[TILE_CACHE_SIZE];
-#endif
-
 #define DrawTile(mask,yshift,ymask,hpcode,cache) {			\
   if (code!=oldcode) {							\
     oldcode = code;							\
@@ -349,7 +321,7 @@ static struct { u32 addr; u32 pack; } tile_pack_cache[TILE_CACHE_SIZE];
       if (code & 0x1000) addr ^= ymask<<1; /* Y-flip */			\
 									\
       pal = ((code>>9)&0x30) | sh; /* shadow */				\
-      N64_TILE_CACHE_READ(addr, pack)					\
+      pack = CPU_LE2(*(u32 *)(PicoMem.vram + addr));			\
       if (!pack)							\
         blank = code;							\
     }									\

@@ -20,9 +20,6 @@ unsigned int prof_vdp_layer_ticks = 0;
 unsigned int prof_vdp_sprite_ticks = 0;
 unsigned int prof_vdp_final_ticks = 0;
 
-/* VRAM dirty tracking */
-unsigned int vram_dirty_count = 0;
-unsigned char vram_dirty_map[0x4000];
 
 /* Globals expected by PicoDrive core */
 char **g_argv;
@@ -237,11 +234,8 @@ int main(int argc, char *argv[])
 					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
 					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
 					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
-					sprintf(fps_buf, "%dF L%d S%d P%d D%d",
-						fps_display, lp, sp, fp, vram_dirty_count);
-					/* Reset dirty tracking for next frame pair */
-					vram_dirty_count = 0;
-					memset(vram_dirty_map, 0, sizeof(vram_dirty_map));
+					sprintf(fps_buf, "%dF L%d S%d P%d",
+						fps_display, lp, sp, fp);
 				}
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
