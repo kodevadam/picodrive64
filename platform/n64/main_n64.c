@@ -99,7 +99,7 @@ int main(int argc, char *argv[])
 	g_argv = argv;
 	g_screen_ptr = screen_buffer;
 
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_DISABLED);
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
 
 	/* Boot message */
@@ -157,7 +157,7 @@ int main(int argc, char *argv[])
 
 	console_close();
 	display_close();
-	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_DISABLED);
+	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 
 	/* FPS counter + profiling */
 	int fps_count = 0;
