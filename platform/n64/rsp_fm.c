@@ -26,7 +26,6 @@ static uint16_t rsp_exp_tab[256] __attribute__((aligned(8)));
 
 enum {
 	CMD_FM_RENDER = 0,
-	CMD_FM_INIT_TABLES = 1,
 };
 
 void rsp_fm_init(void)
@@ -65,10 +64,10 @@ static void upload_tables(void)
 	data_cache_hit_writeback(rsp_sin_tab, sizeof(rsp_sin_tab));
 	data_cache_hit_writeback(rsp_exp_tab, sizeof(rsp_exp_tab));
 
-	rspq_write(fm_ovl_id, CMD_FM_INIT_TABLES,
-		   0,  /* padding: first arg goes into a0 low bits, not a1 */
-		   PhysicalAddr(rsp_sin_tab),
-		   PhysicalAddr(rsp_exp_tab));
+	/* Disabled: init_tables command removed for debugging */
+	(void)rsp_sin_tab;
+	(void)rsp_exp_tab;
+	(void)fm_ovl_id;
 	rspq_flush();
 	rspq_wait();
 
