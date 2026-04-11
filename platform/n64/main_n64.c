@@ -248,7 +248,7 @@ int main(int argc, char *argv[])
 				}
 				graphics_set_color(
 					graphics_make_color(0xFF,0xFF,0xFF,0xFF),
-					graphics_make_color(0,0,0,0));
+					graphics_make_color(0,0,0,0xFF));
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
