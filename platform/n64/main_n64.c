@@ -195,9 +195,15 @@ int main(int argc, char *argv[])
 	surface_t *pending_fb = NULL;
 
 	for (;;) {
-		/* Tell PicoDrive to skip VDP rendering on non-display frames.
-		 * This is the big win: VDP is 77% of frame time. */
-		PicoIn.skipFrame = (frame_count < FRAME_SKIP) ? 1 : 0;
+		/* Skip VDP on non-display frames, skip Z80 too (halves sound
+		 * CPU cost). FM registers retain values so tones sustain. */
+		if (frame_count < FRAME_SKIP) {
+			PicoIn.skipFrame = 1;
+			PicoIn.opt &= ~POPT_EN_Z80;
+		} else {
+			PicoIn.skipFrame = 0;
+			PicoIn.opt |= POPT_EN_Z80;
+		}
 
 		prof_68k_ticks = prof_vdp_ticks = 0;
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;
