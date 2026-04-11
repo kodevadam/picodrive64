@@ -10,8 +10,12 @@
 
 #include "../common/input_pico.h"
 #include "n64.h"
-#include "rsp_render.h"
 #include "embedded_rom.h"
+
+#include <rdpq.h>
+#include <rdpq_attach.h>
+#include <rdpq_mode.h>
+#include <rdpq_tex.h>
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
 unsigned int prof_68k_ticks = 0;
@@ -207,24 +211,28 @@ int main(int argc, char *argv[])
 				int w = g_screen_width;
 				int y_off = (240 - h) / 2;
 
-				if (y_off > 0)
-					memset(fb->buffer, 0, 320 * 240 * 2);
-
 				/* Update palette if dirty */
 				if (Pico.m.dirtyPal) {
 					PicoDrawUpdateHighPal();
 					update_palette();
 				}
 
-				/* CPU palette conversion: 8-bit indexed -> RGBA5551 */
-				uint8_t *src8 = (uint8_t *)screen_buffer;
-				uint16_t *dst16 = (uint16_t *)fb->buffer + y_off * 320;
-				for (int i = 0; i < w * h; i += 4) {
-					dst16[i]   = pal_rgba5551[src8[i]];
-					dst16[i+1] = pal_rgba5551[src8[i+1]];
-					dst16[i+2] = pal_rgba5551[src8[i+2]];
-					dst16[i+3] = pal_rgba5551[src8[i+3]];
-				}
+				/* RDP hardware palette blit: CI8 -> RGBA5551 via TLUT.
+				 * The RDP does palette lookup in hardware, freeing CPU. */
+				data_cache_hit_writeback(screen_buffer, w * h);
+				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
+
+				surface_t ci8_surf = surface_make(
+					screen_buffer, FMT_CI8, w, h, w);
+
+				rdpq_attach(fb, NULL);
+				if (y_off > 0)
+					rdpq_set_fill_color(RGBA16(0,0,0,0));
+				rdpq_set_mode_standard();
+				rdpq_mode_tlut(TLUT_RGBA16);
+				rdpq_tex_upload_tlut(pal_rgba5551, 0, 256);
+				rdpq_tex_blit(&ci8_surf, 0, y_off, NULL);
+				rdpq_detach_wait();
 
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
