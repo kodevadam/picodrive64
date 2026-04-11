@@ -226,9 +226,7 @@ int main(int argc, char *argv[])
 				surface_t ci8_surf = surface_make(
 					screen_buffer, FMT_CI8, w, h, w);
 
-				rdpq_attach(fb, NULL);
-				if (y_off > 0)
-					rdpq_set_fill_color(RGBA16(0,0,0,0));
+				rdpq_attach_clear(fb, NULL);
 				rdpq_set_mode_standard();
 				rdpq_mode_tlut(TLUT_RGBA16);
 				rdpq_tex_upload_tlut(pal_rgba5551, 0, 256);
