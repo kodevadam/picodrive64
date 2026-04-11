@@ -210,7 +210,13 @@ extern struct DrZ80 drZ80;
   (Pico.t.z80c_aim - z80_cyclesLeft)
 
 // 68k clock = OSC/7, z80 clock = OSC/15, 68k:z80 ratio = 7/15 = 3822.9/8192
+#ifdef N64
+// N64: run Z80 at half speed to reduce CPU overhead.
+// Sound driver still works (event-driven), just processes slower.
+#define cycles_68k_to_z80(x) ((x) * 3823 >> 14)
+#else
 #define cycles_68k_to_z80(x) ((x) * 3823 >> 13)
+#endif
 #define cycles_z80_to_68k(x) ((x) * 8777 >> 12)
 
 // ----------------------- SH2 CPU -----------------------
