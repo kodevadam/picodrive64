@@ -46,6 +46,13 @@
 #include "pico_int.h"
 #include <platform/common/upscale.h>
 
+#ifdef N64
+#include <libdragon.h>
+extern unsigned int prof_vdp_layer_ticks;
+extern unsigned int prof_vdp_sprite_ticks;
+extern unsigned int prof_vdp_final_ticks;
+#endif
+
 #define FORCE	// layer forcing via debug register?
 
 int (*PicoScanBegin)(unsigned int num) = NULL;
@@ -1674,6 +1681,9 @@ static int DrawDisplay(int sh)
   else
     DrawLayer(lflags | LF_LINE, HighCacheA, 0, maxcells, est);
   /* - sprites low - */
+#ifdef N64
+  { unsigned int _ts0 = timer_ticks();
+#endif
   if (pvid->debug_p & PVD_KILL_S_LO)
     ;
   else if (est->rendstatus & PDRAW_INTERLACE)
@@ -1708,6 +1718,9 @@ static int DrawDisplay(int sh)
     DrawSpritesSHi(sprited, est);
   else if (sprited[1] & SPRL_HAVE_HI)
     DrawAllSprites(sprited, 1, 0, est);
+#ifdef N64
+  prof_vdp_sprite_ticks += timer_ticks() - _ts0; }
+#endif
 
 #ifdef FORCE
   if (pvid->debug_p & PVD_FORCE_B) {
@@ -1845,21 +1858,32 @@ static void PicoLine(int line, int offs, int sh, int bgc, int off, int on)
     bgc = 0x3f;
 
   // Draw screen:
-  BackFill(bgc, sh, est);
-  if (est->Pico->video.reg[1]&0x40) {
-    int width = (est->Pico->video.reg[12]&1) ? 320 : 256;
-    DrawDisplay(sh);
-    // partial line blanking (display on or off inside the line)
-    if (unlikely(off|on)) {
-      if (off > 0)
-        memset(est->HighCol+8 + off, bgc, width-off);
-      if (on > 0)
-        memset(est->HighCol+8, bgc, on);
+  {
+#ifdef N64
+    unsigned int _tl0 = timer_ticks();
+#endif
+    BackFill(bgc, sh, est);
+    if (est->Pico->video.reg[1]&0x40) {
+      int width = (est->Pico->video.reg[12]&1) ? 320 : 256;
+      DrawDisplay(sh);
+      if (unlikely(off|on)) {
+        if (off > 0)
+          memset(est->HighCol+8 + off, bgc, width-off);
+        if (on > 0)
+          memset(est->HighCol+8, bgc, on);
+      }
     }
-  }
+#ifdef N64
+    unsigned int _tl1 = timer_ticks();
+    prof_vdp_layer_ticks += _tl1 - _tl0;
+#endif
 
-  if (FinalizeLine != NULL)
-    FinalizeLine(sh, line, est);
+    if (FinalizeLine != NULL)
+      FinalizeLine(sh, line, est);
+#ifdef N64
+    prof_vdp_final_ticks += timer_ticks() - _tl1;
+#endif
+  }
 
   if (PicoScanEnd != NULL)
     skip_next_line = PicoScanEnd(line + offs);

@@ -16,6 +16,9 @@
 #include <libdragon.h>
 extern unsigned int prof_68k_ticks;
 extern unsigned int prof_vdp_ticks;
+extern unsigned int prof_vdp_layer_ticks;
+extern unsigned int prof_vdp_sprite_ticks;
+extern unsigned int prof_vdp_final_ticks;
 #define PROF_START() unsigned int _pt = timer_ticks()
 #define PROF_68K()   do { prof_68k_ticks += timer_ticks() - _pt; _pt = timer_ticks(); } while(0)
 #define PROF_VDP()   do { prof_vdp_ticks += timer_ticks() - _pt; _pt = timer_ticks(); } while(0)
