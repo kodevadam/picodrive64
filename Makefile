@@ -463,14 +463,11 @@ else
 	$(LD) $(LINKOUT)$@ $^ $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 endif
 
-# N64: strip, compress ELF, and package as .z64 ROM
+# N64: use platform/n64/Makefile for ROM packaging
 ifeq "$(PLATFORM)" "n64"
-N64_INST ?= /opt/libdragon
 PicoDrive64.z64: $(TARGET)
-	$(N64_INST)/bin/mips64-elf-strip -o $(TARGET).stripped $(TARGET)
-	$(N64_INST)/bin/n64elfcompress $(TARGET).stripped
-	$(N64_INST)/bin/n64tool -t "PicoDrive64" -l 4M -o $@ $(TARGET).stripped
-	rm -f $(TARGET).stripped
+	N64_INST=/opt/libdragon $(MAKE) -C platform/n64 rom
+	cp platform/n64/PicoDrive64.z64 $@
 all: PicoDrive64.z64
 endif
 
