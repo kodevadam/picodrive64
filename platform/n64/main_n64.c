@@ -146,11 +146,12 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* 8-bit indexed, no-copy mode: pitch >= 328 makes PicoDrive
-	 * render directly into screen_buffer (skip FinalizeLine memcpy).
-	 * HighCol layout: 8-byte left margin + 320 pixels per line. */
+	/* 8-bit indexed output. Pitch=320 keeps tile rendering in
+	 * PicoDrive's internal 328-byte HighCol (hot in L1 cache).
+	 * FinalizeLine copies 320 bytes/line - cheaper than cache misses
+	 * from rendering into a full frame buffer. */
 	PicoDrawSetOutFormat(PDF_8BIT, 0);
-	PicoDrawSetOutBuf(screen_buffer, 328);
+	PicoDrawSetOutBuf(screen_buffer, 320);
 
 	printf("  Running!\n");
 	console_render();
@@ -214,19 +215,14 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				/* CPU palette conversion: 8-bit indexed -> RGBA5551
-				 * No-copy mode: HighCol renders at stride 328 with
-				 * 8-byte left margin per line. */
+				/* CPU palette conversion: 8-bit indexed -> RGBA5551 */
+				uint8_t *src8 = (uint8_t *)screen_buffer;
 				uint16_t *dst16 = (uint16_t *)fb->buffer + y_off * 320;
-				for (int y = 0; y < h; y++) {
-					uint8_t *src = (uint8_t *)screen_buffer + y * 328 + 8;
-					uint16_t *dst = dst16 + y * 320;
-					for (int x = 0; x < w; x += 4) {
-						dst[x]   = pal_rgba5551[src[x]];
-						dst[x+1] = pal_rgba5551[src[x+1]];
-						dst[x+2] = pal_rgba5551[src[x+2]];
-						dst[x+3] = pal_rgba5551[src[x+3]];
-					}
+				for (int i = 0; i < w * h; i += 4) {
+					dst16[i]   = pal_rgba5551[src8[i]];
+					dst16[i+1] = pal_rgba5551[src8[i+1]];
+					dst16[i+2] = pal_rgba5551[src8[i+2]];
+					dst16[i+3] = pal_rgba5551[src8[i+3]];
 				}
 
 				unsigned int tb1 = timer_ticks();
