@@ -157,30 +157,37 @@ void blockcpy_or(void *dst, void *src, size_t n, int pat)
 #define TileNormMaker_(pix_func,ret)                         \
 {                                                            \
   unsigned char t;                                           \
-                                                             \
-  t = (pack&0x0000f000)>>12; pix_func(0);                    \
-  t = (pack&0x00000f00)>> 8; pix_func(1);                    \
-  t = (pack&0x000000f0)>> 4; pix_func(2);                    \
-  t = (pack&0x0000000f)    ; pix_func(3);                    \
-  t = (pack&0xf0000000)>>28; pix_func(4);                    \
-  t = (pack&0x0f000000)>>24; pix_func(5);                    \
-  t = (pack&0x00f00000)>>20; pix_func(6);                    \
-  t = (pack&0x000f0000)>>16; pix_func(7);                    \
+  /* Fast skip: check each halfword for zero (4 pixels at once) */ \
+  if (likely(pack & 0x0000ffff)) {                           \
+    t = (pack&0x0000f000)>>12; pix_func(0);                  \
+    t = (pack&0x00000f00)>> 8; pix_func(1);                  \
+    t = (pack&0x000000f0)>> 4; pix_func(2);                  \
+    t = (pack&0x0000000f)    ; pix_func(3);                  \
+  }                                                          \
+  if (likely(pack & 0xffff0000)) {                           \
+    t = (pack&0xf0000000)>>28; pix_func(4);                  \
+    t = (pack&0x0f000000)>>24; pix_func(5);                  \
+    t = (pack&0x00f00000)>>20; pix_func(6);                  \
+    t = (pack&0x000f0000)>>16; pix_func(7);                  \
+  }                                                          \
   return ret;                                                \
 }
 
 #define TileFlipMaker_(pix_func,ret)                         \
 {                                                            \
   unsigned char t;                                           \
-                                                             \
-  t = (pack&0x000f0000)>>16; pix_func(0);                    \
-  t = (pack&0x00f00000)>>20; pix_func(1);                    \
-  t = (pack&0x0f000000)>>24; pix_func(2);                    \
-  t = (pack&0xf0000000)>>28; pix_func(3);                    \
-  t = (pack&0x0000000f)    ; pix_func(4);                    \
-  t = (pack&0x000000f0)>> 4; pix_func(5);                    \
-  t = (pack&0x00000f00)>> 8; pix_func(6);                    \
-  t = (pack&0x0000f000)>>12; pix_func(7);                    \
+  if (likely(pack & 0xffff0000)) {                           \
+    t = (pack&0x000f0000)>>16; pix_func(0);                  \
+    t = (pack&0x00f00000)>>20; pix_func(1);                  \
+    t = (pack&0x0f000000)>>24; pix_func(2);                  \
+    t = (pack&0xf0000000)>>28; pix_func(3);                  \
+  }                                                          \
+  if (likely(pack & 0x0000ffff)) {                           \
+    t = (pack&0x0000000f)    ; pix_func(4);                  \
+    t = (pack&0x000000f0)>> 4; pix_func(5);                  \
+    t = (pack&0x00000f00)>> 8; pix_func(6);                  \
+    t = (pack&0x0000f000)>>12; pix_func(7);                  \
+  }                                                          \
   return ret;                                                \
 }
 
