@@ -10,6 +10,7 @@
 
 #include "../common/input_pico.h"
 #include "n64.h"
+#include "rsp_render.h"
 #include "embedded_rom.h"
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
@@ -100,6 +101,7 @@ int main(int argc, char *argv[])
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
+	rsp_render_init();
 
 	/* Boot message */
 	console_init();

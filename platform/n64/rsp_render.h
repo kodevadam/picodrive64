@@ -7,23 +7,12 @@
 #ifndef RSP_RENDER_H
 #define RSP_RENDER_H
 
+#include <stdint.h>
 #include <libdragon.h>
 
-/* Initialize RSP tile renderer */
 void rsp_render_init(void);
-
-/* Decode a batch of tile rows using RSP.
- * tile_words: array of 32-bit packed VDP tile data
- * palette_bases: array of palette base values per tile
- * output: array of 8-byte pixel rows (8 pixels per tile row)
- * count: number of tile rows to decode
- *
- * This function is async — it starts the RSP and returns.
- * Call rsp_render_wait() before reading output. */
-void rsp_render_tiles_async(const u32 *tile_words, const u8 *palette_bases,
-                            u8 *output, int count);
-
-/* Wait for RSP tile decode to complete */
+void rsp_render_tiles(uint32_t *tile_words, uint8_t *palette_bases, int count);
+uint8_t *rsp_render_get_output(void);
 void rsp_render_wait(void);
 
 #endif
