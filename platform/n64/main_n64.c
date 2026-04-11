@@ -228,6 +228,7 @@ int main(int argc, char *argv[])
 
 				rdpq_attach(fb, NULL);
 				rdpq_set_mode_standard();
+				rdpq_mode_filter(FILTER_POINT);
 				rdpq_mode_tlut(TLUT_RGBA16);
 				rdpq_tex_upload_tlut(pal_rgba5551, 0, 256);
 				rdpq_tex_blit(&ci8_surf, 0, y_off, NULL);
