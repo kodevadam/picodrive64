@@ -1829,9 +1829,9 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	refresh_fc_eg_chan( &ym2612.CH[4] );
 	refresh_fc_eg_chan( &ym2612.CH[5] );
 
-#if 0 /* RSP FM disabled for debugging */
+#ifdef N64
 	/* RSP FM synthesis: offload operator math to RSP */
-	{
+	if (length > 0 && length <= 256) {
 		extern void rsp_fm_render(struct rsp_fm_state *, int32_t *);
 		static struct rsp_fm_state __attribute__((aligned(8))) rsp_state;
 		static int32_t __attribute__((aligned(8))) rsp_out[256];
