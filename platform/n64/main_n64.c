@@ -77,24 +77,16 @@ static void blit_frame(surface_t *fb)
 	 * We skip FinalizeLine entirely (saves 38% of VDP time).
 	 * HighCol pointer advances per line during rendering, so we use
 	 * the base from est and compute per-line offset. */
-	if (Pico.m.dirtyPal) {
-		PicoDrawUpdateHighPal();
-		update_palette();
-	}
-	/* Read directly from HighCol (8-bit indexed per scanline).
-	 * HighColBase points to line 0, stride = HighColIncrement (328). */
-	{
-		unsigned char *base = HighColBase;
-		int stride = HighColIncrement;
-		for (int y = 0; y < h; y++) {
-			unsigned char *s = base + (y * stride) + 8;
-			uint16_t *d = &dst[(y + y_off) * 320];
-			for (int x = 0; x < w; x += 4) {
-				d[x]   = pal_rgba5551[s[x]];
-				d[x+1] = pal_rgba5551[s[x+1]];
-				d[x+2] = pal_rgba5551[s[x+2]];
-				d[x+3] = pal_rgba5551[s[x+3]];
-			}
+	/* BGR555 -> RGBA5551 via LUT */
+	uint16_t *src = screen_buffer;
+	for (int y = 0; y < h; y++) {
+		uint16_t *s = &src[y * 320];
+		uint16_t *d = &dst[(y + y_off) * 320];
+		for (int x = 0; x < w; x += 4) {
+			d[x]   = bgr555_to_rgba5551[s[x]   & 0x7fff];
+			d[x+1] = bgr555_to_rgba5551[s[x+1] & 0x7fff];
+			d[x+2] = bgr555_to_rgba5551[s[x+2] & 0x7fff];
+			d[x+3] = bgr555_to_rgba5551[s[x+3] & 0x7fff];
 		}
 	}
 }
@@ -153,18 +145,11 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Skip FinalizeLine (38% of VDP time!) - read directly from
-	 * HighCol (8-bit indexed) in blit and convert to RGBA5551.
-	 *   Before: HighCol->FinalizeLine(pal)->BGR555->blit(lut)->RGBA5551
-	 *   After:  HighCol->blit(pal)->RGBA5551 */
-	PicoDrawSetOutFormat(PDF_NONE, 0);
-	/* Must set internal buffer with stride so each scanline gets its
-	 * own memory. Without this, HighColIncrement=0 and all lines
-	 * render to the same buffer. */
-	{
-		static unsigned char highcol_buf[328 * 240];
-		PicoDrawSetInternalBuf(highcol_buf, 328);
-	}
+	/* Use accurate 16-bit renderer. FinalizeLine does palette
+	 * conversion (38% of VDP) but VDP skip halves that cost.
+	 * The tile layer rendering (L=53%) is the real target. */
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
 	printf("  Running!\n");
 	console_render();
