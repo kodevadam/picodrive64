@@ -27,7 +27,7 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
 /* Frame skip: 0=none, 1=skip 1, 2=skip 2 */
 static int frame_count = 0;
-#define FRAME_SKIP 2
+#define FRAME_SKIP 1
 
 /* Precomputed BGR555 -> RGBA5551 lookup table (32768 entries = 64KB) */
 static uint16_t bgr555_to_rgba5551[32768];
