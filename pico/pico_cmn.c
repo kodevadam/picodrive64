@@ -124,13 +124,8 @@ static __inline void SekRunM68k(int cyc)
 static void SyncCPUs(unsigned int cycles)
 {
   // sync cpus
-#ifdef N64
-  // N64: skip per-scanline Z80 sync (batched to frame end instead).
-  // Eliminates ~260 PicoSyncZ80 calls per frame.
-#else
   if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80))
     PicoSyncZ80(cycles);
-#endif
 
 #ifdef PICO_CD
   if (PicoIn.AHW & PAHW_MCD)
@@ -155,12 +150,10 @@ static void do_timing_hacks_end(struct PicoVideo *pv)
 {
   PicoVideoFIFOSync(CYCLES_M68K_LINE);
 
-#ifndef N64
   // need rather tight Z80 sync for emulation of main bus cycle stealing
   if (Pico.m.scanline&1)
     if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80))
       PicoSyncZ80(Pico.t.m68c_aim);
-#endif
 }
 
 static void do_timing_hacks_start(struct PicoVideo *pv)
