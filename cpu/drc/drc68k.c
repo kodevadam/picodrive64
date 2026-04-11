@@ -882,7 +882,14 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			return -1;
 		}
 
-		emit_update_nz_long(REG_TMP0);
+		/* Set flags based on operation size */
+		if (op_size == 2) {
+			emit_update_nz_long(REG_TMP0);
+		} else {
+			/* Word size: mask to 16 bits for correct N/Z flags */
+			EMIT(MIPS_ANDI(REG_TMP1, REG_TMP0, 0xffff));
+			emit_update_nz_long(REG_TMP1);
+		}
 		emit_clear_vc();
 		*cycles_out = (src_mode >= 2) ? 12 : 4;
 		return 2 + extra_words;
@@ -1210,8 +1217,8 @@ static int compile_one_insn(u32 pc, int *cycles_out)
 			*cycles_out = 10;
 			return insn_sz | 0x8000; /* flag: block-ending */
 		}
-		if (cond != 0) {
-			/* Only BRA - all Bcc disabled until flag bugs resolved */
+		if (cond == 1 || cond >= 8) {
+			/* BSR and signed conditions (BGE/BLT/BGT/BLE/BPL/BMI) disabled */
 			return -1;
 		}
 		/* BRA + BEQ/BNE + BCC/BCS enabled.
