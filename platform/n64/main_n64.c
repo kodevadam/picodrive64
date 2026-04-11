@@ -146,9 +146,9 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Use 16-bit BGR555 output with accurate renderer.
-	 * PDF_8BIT causes display assertion - needs investigation. */
-	PicoDrawSetOutBuf(screen_buffer, 320);
+	/* Accurate renderer, 16-bit BGR555 output */
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
 	printf("  Running!\n");
 	console_render();
