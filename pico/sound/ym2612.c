@@ -118,6 +118,11 @@
 #include "../pico_int.h"
 #include "ym2612.h"
 
+#ifdef N64
+#include <libdragon.h>
+#include "../../platform/n64/rsp_fm.h"
+#endif
+
 #ifndef EXTERNAL_YM2612
 #include <stdlib.h>
 // let it be 1 global to simplify things
@@ -1824,6 +1829,117 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	refresh_fc_eg_chan( &ym2612.CH[4] );
 	refresh_fc_eg_chan( &ym2612.CH[5] );
 
+#ifdef N64
+	/* RSP FM synthesis: offload operator math to RSP */
+	{
+		extern void rsp_fm_render(struct rsp_fm_state *, int32_t *);
+		static struct rsp_fm_state __attribute__((aligned(8))) rsp_state;
+		static int32_t __attribute__((aligned(8))) rsp_out[256];
+		int c;
+
+		/* Extract channel state for RSP */
+		for (c = 0; c < 6; c++) {
+			struct rsp_fm_chan *rch = &rsp_state.ch[c];
+			FM_CH *fmch = &ym2612.CH[c];
+
+			if (!(ym2612.slot_mask & (0xf << (c*4)))) {
+				rch->enabled = 0;
+				continue;
+			}
+			rch->phase[0] = fmch->SLOT[SLOT1].phase;
+			rch->phase[1] = fmch->SLOT[SLOT2].phase;
+			rch->phase[2] = fmch->SLOT[SLOT3].phase;
+			rch->phase[3] = fmch->SLOT[SLOT4].phase;
+
+			rch->incr[0] = fmch->SLOT[SLOT1].Incr;
+			rch->incr[1] = fmch->SLOT[SLOT2].Incr;
+			rch->incr[2] = fmch->SLOT[SLOT3].Incr;
+			rch->incr[3] = fmch->SLOT[SLOT4].Incr;
+
+			rch->vol_out[0] = fmch->SLOT[SLOT1].vol_out;
+			rch->vol_out[1] = fmch->SLOT[SLOT2].vol_out;
+			rch->vol_out[2] = fmch->SLOT[SLOT3].vol_out;
+			rch->vol_out[3] = fmch->SLOT[SLOT4].vol_out;
+
+			rch->algo = fmch->ALGO & 7;
+			rch->fb_shift = fmch->FB;
+			rch->pan = 0;
+			rch->enabled = 1;
+			rch->op1_out = fmch->op1_out;
+			rch->mem = fmch->mem_value;
+		}
+		rsp_state.num_samples = length;
+
+		/* Submit RSP FM and wait */
+		rsp_fm_render(&rsp_state, rsp_out);
+		rspq_wait();
+		data_cache_hit_invalidate(&rsp_state, sizeof(rsp_state));
+		data_cache_hit_invalidate(rsp_out, length * sizeof(int32_t));
+
+		/* Copy RSP output to FM buffer (mono, accumulate) */
+		for (c = 0; c < length; c++)
+			buffer[c] += rsp_out[c];
+
+		/* Write back RSP-maintained state */
+		for (c = 0; c < 6; c++) {
+			FM_CH *fmch = &ym2612.CH[c];
+			if (!(ym2612.slot_mask & (0xf << (c*4)))) continue;
+
+			fmch->op1_out = rsp_state.ch[c].op1_out;
+			fmch->mem_value = rsp_state.ch[c].mem;
+
+			/* Advance phases (RSP advanced them internally but
+			 * DMA'd back state includes updated phases) */
+			fmch->SLOT[SLOT1].phase = rsp_state.ch[c].phase[0];
+			fmch->SLOT[SLOT2].phase = rsp_state.ch[c].phase[1];
+			fmch->SLOT[SLOT3].phase = rsp_state.ch[c].phase[2];
+			fmch->SLOT[SLOT4].phase = rsp_state.ch[c].phase[3];
+		}
+
+		/* Advance envelope generator (coarse, batched) */
+		{
+			UINT32 timer = ym2612.OPN.eg_timer;
+			UINT32 timer_add = ym2612.OPN.eg_timer_add;
+			int i;
+
+			for (i = 0; i < length; i++) {
+				timer += timer_add;
+				while (timer >= (UINT32)(1 << EG_SH)) {
+					int ch;
+					timer -= (1 << EG_SH);
+					for (ch = 0; ch < 6; ch++) {
+						if (!(ym2612.slot_mask & (0xf << (ch*4))))
+							continue;
+						if (ym2612.CH[ch].upd_cnt > 0) {
+							ym2612.CH[ch].upd_cnt--;
+							continue;
+						}
+						ym2612.CH[ch].upd_cnt = 2;
+						ym2612.OPN.eg_cnt++;
+						if (ym2612.OPN.eg_cnt >= 4096)
+							ym2612.OPN.eg_cnt = 1;
+						{
+							int s;
+							UINT32 ssg_en = (ym2612.ssg_mask >> (ch*4)) & 0xf;
+							ssg_en = ssg_en && (ym2612.OPN.ST.flags & ST_SSG);
+							for (s = 0; s < 4; s++) {
+								if (ym2612.CH[ch].SLOT[s].state != EG_OFF)
+									update_eg_phase(&ym2612.CH[ch].SLOT[s],
+										ym2612.OPN.eg_cnt, ssg_en);
+							}
+						}
+					}
+				}
+			}
+			ym2612.OPN.eg_timer = timer;
+		}
+
+		/* Advance LFO */
+		ym2612.OPN.lfo_cnt += ym2612.OPN.lfo_inc * length;
+
+		return 1;
+	}
+#else
 	pan = ym2612.OPN.pan;
 
 	/* mix to 32bit dest */
@@ -1847,6 +1963,7 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	chan_render_finish(buffer, length, active_chs);
 
 	return active_chs; // 1 if buffer updated
+#endif
 }
 
 
