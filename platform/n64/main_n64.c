@@ -175,7 +175,9 @@ int main(int argc, char *argv[])
 	unsigned int prof_emu = 0, prof_blit = 0;
 	int prof_emu_pct = 0, prof_blit_pct = 0;
 
-	/* Main loop */
+	/* Main loop - pipelined: RDP blit runs in parallel with skip frame */
+	surface_t *pending_fb = NULL;
+
 	for (;;) {
 		/* Tell PicoDrive to skip VDP rendering on non-display frames.
 		 * This is the big win: VDP is 77% of frame time. */
@@ -185,6 +187,9 @@ int main(int argc, char *argv[])
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;
 		unsigned int t0 = timer_ticks();
 		PicoFrame();
+		/* During skip frames, the RDP blit from the previous render
+		 * frame runs in parallel with PicoFrame(). Skip frames don't
+		 * touch screen_buffer (no VDP), so no data race. */
 		unsigned int t1 = timer_ticks();
 		fps_count++;
 
@@ -205,21 +210,40 @@ int main(int argc, char *argv[])
 
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
-			unsigned int tb0 = timer_ticks();
+
+			/* Finish previous RDP blit (ran during skip frame) */
+			if (pending_fb) {
+				rspq_wait();
+				data_cache_hit_invalidate(pending_fb->buffer, 320 * 240 * 2);
+				graphics_set_color(
+					graphics_make_color(0xFF,0xFF,0xFF,0xFF),
+					graphics_make_color(0,0,0,0xFF));
+				{
+					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
+					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
+					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
+					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
+					sprintf(fps_buf, "%dF L%d S%d P%d",
+						fps_display, lp, sp, fp);
+				}
+				graphics_draw_text(pending_fb, 4, 4, fps_buf);
+				data_cache_hit_writeback(pending_fb->buffer, 320 * 24 * 2);
+				display_show(pending_fb);
+				pending_fb = NULL;
+			}
+
+			/* Start new RDP blit (non-blocking) */
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
 				int h = g_screen_height;
 				int w = g_screen_width;
 				int y_off = (240 - h) / 2;
 
-				/* Update palette if dirty */
 				if (Pico.m.dirtyPal) {
 					PicoDrawUpdateHighPal();
 					update_palette();
 				}
 
-				/* RDP hardware palette blit: CI8 -> RGBA5551 via TLUT.
-				 * The RDP does palette lookup in hardware, freeing CPU. */
 				data_cache_hit_writeback(screen_buffer, w * h);
 				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
 
@@ -232,28 +256,8 @@ int main(int argc, char *argv[])
 				rdpq_mode_tlut(TLUT_RGBA16);
 				rdpq_tex_upload_tlut(pal_rgba5551, 0, 256);
 				rdpq_tex_blit(&ci8_surf, 0, y_off, NULL);
-				rdpq_detach_wait();
-				/* Invalidate CPU cache so we see RDP's framebuffer writes */
-				data_cache_hit_invalidate(fb->buffer, 320 * 240 * 2);
-
-				unsigned int tb1 = timer_ticks();
-				prof_blit += tb1 - tb0;
-
-				{
-					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
-					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
-					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
-					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
-					sprintf(fps_buf, "%dF L%d S%d P%d",
-						fps_display, lp, sp, fp);
-				}
-				graphics_set_color(
-					graphics_make_color(0xFF,0xFF,0xFF,0xFF),
-					graphics_make_color(0,0,0,0xFF));
-				graphics_draw_text(fb, 4, 4, fps_buf);
-				/* Flush text pixels to RDRAM so RDP filter sees them */
-				data_cache_hit_writeback(fb->buffer, 320 * 24 * 2);
-				display_show(fb);
+				rdpq_detach();  /* Non-blocking! RDP runs during next skip frame */
+				pending_fb = fb;
 			}
 		}
 
