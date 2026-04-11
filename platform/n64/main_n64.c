@@ -147,11 +147,10 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Accurate renderer. PDF_8BIT (29 FPS) ≈ PDF_RGB555 (30 FPS)
-	 * because palette work just moves between VDP and blit.
-	 * Use RGB555 since it's marginally faster with VDP skip. */
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
+	/* Use 8-bit output so RSP can do palette->RGBA5551 conversion
+	 * in parallel with CPU running next frame's emulation. */
+	PicoDrawSetOutFormat(PDF_8BIT, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320);
 
 	printf("  Running!\n");
 	console_render();
@@ -202,18 +201,39 @@ int main(int argc, char *argv[])
 			unsigned int tb0 = timer_ticks();
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
-				blit_frame(fb);
+				int h = g_screen_height;
+				int w = g_screen_width;
+				int y_off = (240 - h) / 2;
+
+				if (y_off > 0)
+					memset(fb->buffer, 0, 320 * 240 * 2);
+
+				/* Update palette if needed */
+				if (Pico.m.dirtyPal) {
+					PicoDrawUpdateHighPal();
+					update_palette();
+				}
+
+				/* Flush 8-bit pixel data to RDRAM for RSP */
+				data_cache_hit_writeback(screen_buffer, w * h);
+				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
+
+				/* Start RSP: convert 8-bit indexed -> RGBA5551
+				 * Output goes directly into display framebuffer */
+				uint16_t *dst_start = (uint16_t *)fb->buffer + y_off * 320;
+				rsp_render_start(screen_buffer, dst_start,
+				                 pal_rgba5551, w * h);
+
+				/* Wait for RSP to finish */
+				rsp_render_wait();
+
+				/* Invalidate the display buffer cache so we see RSP's output */
+				data_cache_hit_invalidate(fb->buffer, 320 * 240 * 2);
+
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
-				/* Draw FPS + profile */
-				{
-					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
-					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
-					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
-					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
-					sprintf(fps_buf, "%dF L%d S%d P%d",
-						fps_display, lp, sp, fp);
-				}
+
+				sprintf(fps_buf, "%d FPS", fps_display);
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
