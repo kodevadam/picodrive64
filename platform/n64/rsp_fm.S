@@ -1,19 +1,9 @@
 ##################################################
 # RSP FM Synthesis Overlay for PicoDrive N64
 #
-# Generates YM2612 FM audio samples on the RSP,
-# freeing the CPU from the synthesis hot loop.
-#
-# All 8 YM2612 algorithms supported via table-driven
-# routing. CPU provides per-channel state (phases,
-# increments, envelope levels, algorithm, feedback).
-# RSP computes samples using decomposed sin/exp
-# tables (1KB in DMEM).
-#
-# DMEM Layout:
-#   Overlay header + algo_table
-#   Saved state: sin_tab + exp_tab (1KB)
-#   BSS: chan_state + work_out
+# All 8 YM2612 algorithms supported. Routing params
+# are embedded in per-channel state (set by CPU),
+# so no algo_table needed in DMEM.
 ##################################################
 
 #include <rsp_queue.inc>
@@ -29,27 +19,6 @@
     .align 3
 sin_tab:    .space 512      # 256 x u16: phase -> log-sine
 exp_tab:    .space 512      # 256 x u16: log -> linear
-
-    ##################################################
-    # Algorithm routing table: 8 entries x 8 bytes
-    #
-    # byte 0: C1_mod    0=zero, 1=op1s
-    # byte 1: M2_mod    0=zero, 1=prev_mem
-    # byte 2: C2_mod    0=zero, 1=M2, 2=op1s+M2, 3=mem+M2, 4=op1s
-    # byte 3: out_flags bit0=op1s bit1=C1 bit2=M2 bit3=C2
-    # byte 4: mem_src   0=none, 1=C1, 2=op1s+C1, 3=op1s
-    # bytes 5-7: pad
-    ##################################################
-    .align 3
-algo_table:
-    .byte 1,1,1, 0x08, 1, 0,0,0    /* algo 0: M1->C1->mem->M2->C2 */
-    .byte 0,1,1, 0x08, 2, 0,0,0    /* algo 1: (M1+C1)->mem->M2->C2 */
-    .byte 0,1,2, 0x08, 1, 0,0,0    /* algo 2: C1->mem,(M1+M2)->C2 */
-    .byte 1,0,3, 0x08, 1, 0,0,0    /* algo 3: M1->C1->mem,(mem+M2)->C2 */
-    .byte 1,0,1, 0x0A, 0, 0,0,0    /* algo 4: (M1->C1)+(M2->C2) */
-    .byte 1,1,4, 0x0E, 3, 0,0,0    /* algo 5: M1->(C1+M2+C2) */
-    .byte 1,0,0, 0x0E, 0, 0,0,0    /* algo 6: (M1->C1)+M2+C2 */
-    .byte 0,0,0, 0x0F, 0, 0,0,0    /* algo 7: M1+C1+M2+C2 */
     RSPQ_EndSavedState
 
     .bss
@@ -61,8 +30,10 @@ rdram_state_save: .space 8  # saved RDRAM state addr for DMA-back
     .text
 
 #####################################################
-# cmd_fm_init_tables: DMA sin_tab and exp_tab
-# a1 = RDRAM sin_tab (512B), a2 = RDRAM exp_tab (512B)
+# cmd_fm_init_tables
+# a0 = cmd (low bits unused)
+# a1 = RDRAM sin_tab (512B)
+# a2 = RDRAM exp_tab (512B)
 #####################################################
 cmd_fm_init_tables:
     move    s0, a1
@@ -81,39 +52,38 @@ cmd_fm_init_tables:
     nop
 
 #####################################################
-# rsp_op_calc: FM operator calculation subroutine
+# rsp_op_calc: FM operator calculation
 #
 # sin = (phase>>16) + (pm>>1)
-# Lookup sin_tab, exp_tab, apply envelope
 #
 # Input:  t6=phase, t7=env, t8=pm
 # Output: v1=result
 # Clobbers: t0, t1, t9, s0, s1
 #####################################################
 rsp_op_calc:
-    srl     t9, t6, 16         # phase >> 16
-    sra     t0, t8, 1          # pm >> 1
-    add     t9, t9, t0         # sin = (phase>>16) + (pm>>1)
+    srl     t9, t6, 16
+    sra     t0, t8, 1
+    add     t9, t9, t0
 
-    andi    s1, t9, 0x200      # neg flag
-    andi    s0, t9, 0x100      # mirror flag
-    beq     s0, zero, .oc_no_flip
+    andi    s1, t9, 0x200
+    andi    s0, t9, 0x100
+    beq     s0, zero, .oc_nf
     nop
     xori    t9, t9, 0xff
-.oc_no_flip:
-    andi    t9, t9, 0xff       # sin index
+.oc_nf:
+    andi    t9, t9, 0xff
 
-    andi    t7, t7, 0xfffe     # env &= ~1
-    sll     t7, t7, 2          # env << 2
-    sll     t0, t9, 1          # halfword offset
+    andi    t7, t7, 0xfffe
+    sll     t7, t7, 2
+    sll     t0, t9, 1
     la      t1, %lo(sin_tab)
     add     t0, t1, t0
     lhu     t0, 0(t0)
-    add     t7, t7, t0         # p = (env<<2) + sin_tab[sin]
+    add     t7, t7, t0
 
     li      t0, 3328
     slt     t0, t7, t0
-    beq     t0, zero, .oc_silent
+    beq     t0, zero, .oc_sil
     nop
 
     andi    t0, t7, 0xff
@@ -131,28 +101,27 @@ rsp_op_calc:
 .oc_neg:
     jr      ra
     sub     v1, zero, t0
-.oc_silent:
+.oc_sil:
     jr      ra
     move    v1, zero
 
 #####################################################
-# cmd_fm_render: Generate FM audio samples
+# cmd_fm_render
 # a0 = cmd | num_samples (low 16 bits)
 # a1 = RDRAM rsp_fm_state (340 bytes)
 # a2 = RDRAM output buffer (s32 mono)
 #####################################################
 cmd_fm_render:
-    andi    s7, a0, 0xffff      # s7 = num_samples
-    move    s5, a2              # s5 = RDRAM output address
+    andi    s7, a0, 0xffff
+    move    s5, a2
 
-    # Save RDRAM state address for DMA-back
     la      t0, %lo(rdram_state_save)
     sw      a1, 0(t0)
 
     # DMA in channel state
     move    s0, a1
     la      s4, %lo(chan_state)
-    li      t0, 343             # 344 bytes - 1
+    li      t0, 343
     li      t1, 0
     jal     DMAIn
     nop
@@ -167,16 +136,15 @@ cmd_fm_render:
     bne     t0, t1, .clear_loop
     nop
 
-    # Process 6 channels
     li      s6, 0
 
 .chan_loop:
-    # s3 = &chan_state[s6]: offset = s6 * 56 = (s6<<5)+(s6<<4)+(s6<<3)
-    sll     t0, s6, 5          # *32
-    sll     t1, s6, 4          # *16
-    add     t0, t0, t1         # *48
-    sll     t1, s6, 3          # *8
-    add     t0, t0, t1         # *56
+    # s3 = &chan_state[s6]: s6 * 56 = (s6<<5)+(s6<<4)+(s6<<3)
+    sll     t0, s6, 5
+    sll     t1, s6, 4
+    add     t0, t0, t1
+    sll     t1, s6, 3
+    add     t0, t0, t1
     la      t1, %lo(chan_state)
     add     s3, t1, t0
 
@@ -186,27 +154,20 @@ cmd_fm_render:
     nop
 
     # Load channel params
-    lbu     t2, 40(s3)         # algo (0-7)
     lbu     t3, 41(s3)         # fb_shift
     lw      t4, 44(s3)         # op1_out
     lw      t5, 48(s3)         # mem
 
-    # Compute algo table pointer -> $28 (gp)
-    sll     t0, t2, 3          # algo * 8
-    la      t1, %lo(algo_table)
-    add     $28, t1, t0
-
-    li      s2, 0              # sample index
+    li      s2, 0
 
 .sample_loop:
     ###############################################
-    # Op1 (M1) with feedback: op_calc1 formula
+    # Op1 (M1) with feedback: op_calc1
     # sin = (phase + pm) >> 16
     ###############################################
-    lw      t6, 0(s3)         # phase[0]
-    lhu     t7, 32(s3)        # vol_out[0]
+    lw      t6, 0(s3)
+    lhu     t7, 32(s3)
 
-    # Feedback: pm = ((op1_out + (op1_out<<16)) >> 16) << fb_shift
     beq     t3, zero, .no_fb
     move    t8, zero
     sll     t9, t4, 16
@@ -260,49 +221,49 @@ cmd_fm_render:
     move    a3, zero
 .op1_done:
 
-    # Update op1_out: (old << 16) | (new & 0xffff)
+    # Update op1_out
     sll     t4, t4, 16
     andi    t0, a3, 0xffff
     or      t4, t4, t0
 
-    # $26 = op1_out >> 16 (signed) - used as modulation source
+    # $26 = op1_out >> 16 (signed)
     sra     $26, t4, 16
 
     ###############################################
-    # C1 (SLOT2): mod from algo_table[0]
+    # C1 (SLOT2): mod from chan_state offset 40 (c1_mod)
     ###############################################
-    lbu     t0, 0($28)
+    lbu     t0, 40(s3)         # c1_mod
     beq     t0, zero, .c1_call
-    move    t8, zero           # pm = 0 (delay slot)
-    move    t8, $26            # pm = op1s
+    move    t8, zero
+    move    t8, $26
 .c1_call:
     lw      t6, 4(s3)
     lhu     t7, 34(s3)
     jal     rsp_op_calc
     nop
-    move    $27, v1            # $27 = C1_out
+    move    $27, v1            # C1_out
 
     ###############################################
-    # M2 (SLOT3): mod from algo_table[1]
+    # M2 (SLOT3): mod from chan_state offset 42 (m2_mod)
     ###############################################
-    lbu     t0, 1($28)
+    lbu     t0, 42(s3)         # m2_mod
     beq     t0, zero, .m2_call
     move    t8, zero
-    move    t8, t5             # pm = prev_mem
+    move    t8, t5             # prev_mem
 .m2_call:
     lw      t6, 8(s3)
     lhu     t7, 36(s3)
     jal     rsp_op_calc
     nop
-    move    $30, v1            # $30 = M2_out
+    move    $30, v1            # M2_out
 
     ###############################################
-    # C2 (SLOT4): mod from algo_table[2]
+    # C2 (SLOT4): mod from chan_state offset 52 (c2_mod)
     # 0=zero, 1=M2, 2=op1s+M2, 3=mem+M2, 4=op1s
     ###############################################
-    lbu     t0, 2($28)
+    lbu     t0, 52(s3)         # c2_mod
     beq     t0, zero, .c2_call
-    move    t8, zero           # pm = 0
+    move    t8, zero
 
     li      t1, 1
     beq     t0, t1, .c2_m2
@@ -330,37 +291,36 @@ cmd_fm_render:
     # v1 = C2_out
 
     ###############################################
-    # Output accumulation: algo_table[3]
+    # Output: from chan_state offset 53 (out_flags)
     ###############################################
-    lbu     t0, 3($28)
-    move    a3, zero           # output accumulator
+    lbu     t0, 53(s3)
+    move    a3, zero
 
-    andi    t1, t0, 1          # bit0: op1s
+    andi    t1, t0, 1
     beq     t1, zero, .no_o1
     nop
     add     a3, a3, $26
 .no_o1:
-    andi    t1, t0, 2          # bit1: C1
+    andi    t1, t0, 2
     beq     t1, zero, .no_oc1
     nop
     add     a3, a3, $27
 .no_oc1:
-    andi    t1, t0, 4          # bit2: M2
+    andi    t1, t0, 4
     beq     t1, zero, .no_om2
     nop
     add     a3, a3, $30
 .no_om2:
-    andi    t1, t0, 8          # bit3: C2
+    andi    t1, t0, 8
     beq     t1, zero, .no_oc2
     nop
     add     a3, a3, v1
 .no_oc2:
 
     ###############################################
-    # Update mem: algo_table[4]
-    # 0=none, 1=C1, 2=op1s+C1, 3=op1s
+    # Update mem: from chan_state offset 54 (mem_src)
     ###############################################
-    lbu     t0, 4($28)
+    lbu     t0, 54(s3)
     beq     t0, zero, .no_mem
     nop
     li      t1, 1
@@ -411,7 +371,6 @@ cmd_fm_render:
     add     t0, t0, t1
     sw      t0, 12(s3)
 
-    # Next sample
     addiu   s2, s2, 1
     bne     s2, s7, .sample_loop
     nop
@@ -426,7 +385,7 @@ cmd_fm_render:
     bne     s6, t0, .chan_loop
     nop
 
-    # DMA out work_out -> RDRAM output
+    # DMA out work_out
     move    s0, s5
     la      s4, %lo(work_out)
     sll     t0, s7, 2
@@ -435,7 +394,7 @@ cmd_fm_render:
     jal     DMAOut
     nop
 
-    # DMA back chan_state -> RDRAM (for op1_out/mem writeback)
+    # DMA back chan_state (for op1_out/mem/phase writeback)
     la      t0, %lo(rdram_state_save)
     lw      s0, 0(t0)
     la      s4, %lo(chan_state)

@@ -1829,7 +1829,7 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	refresh_fc_eg_chan( &ym2612.CH[4] );
 	refresh_fc_eg_chan( &ym2612.CH[5] );
 
-#ifdef N64
+#if 0 /* RSP FM disabled for debugging */
 	/* RSP FM synthesis: offload operator math to RSP */
 	{
 		extern void rsp_fm_render(struct rsp_fm_state *, int32_t *);
@@ -1861,12 +1861,31 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 			rch->vol_out[2] = fmch->SLOT[SLOT3].vol_out;
 			rch->vol_out[3] = fmch->SLOT[SLOT4].vol_out;
 
-			rch->algo = fmch->ALGO & 7;
 			rch->fb_shift = fmch->FB;
-			rch->pan = 0;
 			rch->enabled = 1;
 			rch->op1_out = fmch->op1_out;
 			rch->mem = fmch->mem_value;
+
+			/* Algorithm routing params (replaces DMEM algo_table) */
+			{
+				/* c1_mod, m2_mod, c2_mod, out_flags, mem_src */
+				static const uint8_t algo_lut[8][5] = {
+					{1,1,1, 0x08, 1}, /* 0: M1->C1->mem->M2->C2 */
+					{0,1,1, 0x08, 2}, /* 1: (M1+C1)->mem->M2->C2 */
+					{0,1,2, 0x08, 1}, /* 2: C1->mem,(M1+M2)->C2 */
+					{1,0,3, 0x08, 1}, /* 3: M1->C1->mem,(mem+M2)->C2 */
+					{1,0,1, 0x0A, 0}, /* 4: (M1->C1)+(M2->C2) */
+					{1,1,4, 0x0E, 3}, /* 5: M1->(C1+M2+C2) */
+					{1,0,0, 0x0E, 0}, /* 6: (M1->C1)+M2+C2 */
+					{0,0,0, 0x0F, 0}, /* 7: M1+C1+M2+C2 */
+				};
+				int algo = fmch->ALGO & 7;
+				rch->c1_mod    = algo_lut[algo][0];
+				rch->m2_mod    = algo_lut[algo][1];
+				rch->c2_mod    = algo_lut[algo][2];
+				rch->out_flags = algo_lut[algo][3];
+				rch->mem_src   = algo_lut[algo][4];
+			}
 		}
 		rsp_state.num_samples = length;
 

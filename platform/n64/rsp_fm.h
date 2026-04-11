@@ -3,17 +3,35 @@
 
 #include <stdint.h>
 
+/*
+ * Algorithm routing parameters (computed by CPU, consumed by RSP).
+ * Eliminates need for algo_table in RSP DMEM.
+ *
+ * c1_mod:    modulation source for C1 (SLOT2): 0=zero, 1=op1_out>>16
+ * m2_mod:    modulation source for M2 (SLOT3): 0=zero, 1=prev_mem
+ * c2_mod:    modulation source for C2 (SLOT4):
+ *              0=zero, 1=M2_out, 2=op1s+M2, 3=mem+M2, 4=op1s
+ * out_flags: which operators contribute to output:
+ *              bit0=op1s, bit1=C1, bit2=M2, bit3=C2
+ * mem_src:   what writes to delay memory:
+ *              0=none, 1=C1, 2=op1s+C1, 3=op1s
+ */
+
 /* Per-channel state sent to RSP for FM synthesis */
 struct rsp_fm_chan {
-	uint32_t phase[4];     /* operator phase counters */
-	uint32_t incr[4];      /* phase increments */
-	uint16_t vol_out[4];   /* envelope levels (attenuation) */
-	uint8_t  algo;         /* algorithm 0-7 */
-	uint8_t  fb_shift;     /* feedback shift (0=off, 1-7) */
-	uint8_t  pan;          /* bit0=mono, bit4=R, bit5=L */
-	uint8_t  enabled;      /* channel active */
-	int32_t  op1_out;      /* operator 1 feedback state */
-	int32_t  mem;          /* algorithm delay memory */
+	uint32_t phase[4];     /* 0-15: operator phase counters */
+	uint32_t incr[4];      /* 16-31: phase increments */
+	uint16_t vol_out[4];   /* 32-39: envelope levels (attenuation) */
+	uint8_t  c1_mod;       /* 40: C1 modulation source */
+	uint8_t  fb_shift;     /* 41: feedback shift (0=off, 1-7) */
+	uint8_t  m2_mod;       /* 42: M2 modulation source */
+	uint8_t  enabled;      /* 43: channel active */
+	int32_t  op1_out;      /* 44-47: operator 1 feedback state */
+	int32_t  mem;          /* 48-51: algorithm delay memory */
+	uint8_t  c2_mod;       /* 52: C2 modulation type */
+	uint8_t  out_flags;    /* 53: output contribution flags */
+	uint8_t  mem_src;      /* 54: delay memory source */
+	uint8_t  pad;          /* 55: alignment */
 }; /* 56 bytes */
 
 /* Full state for all 6 FM channels */
