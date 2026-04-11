@@ -47,7 +47,7 @@ static void init_color_lut(void)
 }
 
 /* Fast blit using LUT - one table lookup per pixel, no math */
-/* RGBA5551 palette cache for 8-bit alt renderer */
+static uint16_t __attribute__((aligned(16))) rsp_output[320 * 240];
 static uint16_t pal_rgba5551[256];
 
 static void update_palette(void)
@@ -217,18 +217,21 @@ int main(int argc, char *argv[])
 				/* Flush 8-bit pixel data to RDRAM for RSP */
 				data_cache_hit_writeback(screen_buffer, w * h);
 				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
+				data_cache_hit_writeback(rsp_output, w * h * 2);
 
 				/* Start RSP: convert 8-bit indexed -> RGBA5551
-				 * Output goes directly into display framebuffer */
-				uint16_t *dst_start = (uint16_t *)fb->buffer + y_off * 320;
-				rsp_render_start(screen_buffer, dst_start,
+				 * Use intermediate buffer to avoid corrupting
+				 * libdragon's display buffer lock tracking */
+				rsp_render_start(screen_buffer, rsp_output,
 				                 pal_rgba5551, w * h);
 
 				/* Wait for RSP to finish */
 				rsp_render_wait();
 
-				/* Invalidate the display buffer cache so we see RSP's output */
-				data_cache_hit_invalidate(fb->buffer, 320 * 240 * 2);
+				/* Invalidate cache to see RSP's output, then copy to display */
+				data_cache_hit_invalidate(rsp_output, w * h * 2);
+				memcpy((uint16_t *)fb->buffer + y_off * 320,
+				       rsp_output, w * h * 2);
 
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
