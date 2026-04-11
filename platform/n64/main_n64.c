@@ -216,14 +216,22 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				/* CPU palette conversion: 8-bit indexed -> RGBA5551 */
+				/* CPU palette conversion: 8-bit indexed -> RGBA5551
+				 * With scanline skip, even lines have data, odd are
+				 * empty. Convert even lines and duplicate to odd. */
 				uint8_t *src8 = (uint8_t *)screen_buffer;
 				uint16_t *dst16 = (uint16_t *)fb->buffer + y_off * 320;
-				for (int i = 0; i < w * h; i += 4) {
-					dst16[i]   = pal_rgba5551[src8[i]];
-					dst16[i+1] = pal_rgba5551[src8[i+1]];
-					dst16[i+2] = pal_rgba5551[src8[i+2]];
-					dst16[i+3] = pal_rgba5551[src8[i+3]];
+				for (int y = 0; y < h; y += 2) {
+					uint8_t *sl = src8 + y * w;
+					uint16_t *dl = dst16 + y * 320;
+					for (int x = 0; x < w; x += 4) {
+						dl[x]   = pal_rgba5551[sl[x]];
+						dl[x+1] = pal_rgba5551[sl[x+1]];
+						dl[x+2] = pal_rgba5551[sl[x+2]];
+						dl[x+3] = pal_rgba5551[sl[x+3]];
+					}
+					/* Duplicate even line to odd */
+					memcpy(dl + 320, dl, w * 2);
 				}
 
 				unsigned int tb1 = timer_ticks();

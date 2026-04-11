@@ -1917,8 +1917,22 @@ void PicoDrawSync(int to, int off, int on)
     return;
   }
 
+#ifdef N64
+  /* Scanline skip: render only even lines, copy to odd during blit.
+   * Halves layer rendering work (L70% -> ~L35%). */
+  for (line = est->DrawScanline; line < to; line++) {
+    if (line & 1) {
+      /* Skip odd lines: advance pointers without rendering */
+      est->HighCol += HighColIncrement;
+      est->DrawLineDest = (char *)est->DrawLineDest + DrawLineDestIncrement;
+      continue;
+    }
+    PicoLine(line, offs, sh, bgc, 0, 0);
+  }
+#else
   for (line = est->DrawScanline; line < to; line++)
     PicoLine(line, offs, sh, bgc, 0, 0);
+#endif
 
   // last line
   if (line <= to)
@@ -1931,7 +1945,16 @@ void PicoDrawSync(int to, int off, int on)
       DrawBlankedLine(line, offs, sh, bgc);
     else {
       if (on > width2) on = 0; // on, before start of line?
-      PicoLine(line, offs, sh, bgc, 2*off, 2*on);
+#ifdef N64
+      if (!(line & 1))
+#endif
+        PicoLine(line, offs, sh, bgc, 2*off, 2*on);
+#ifdef N64
+      else {
+        est->HighCol += HighColIncrement;
+        est->DrawLineDest = (char *)est->DrawLineDest + DrawLineDestIncrement;
+      }
+#endif
     }
     line++;
   }
