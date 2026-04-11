@@ -101,7 +101,6 @@ int main(int argc, char *argv[])
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
-	rsp_render_init();
 
 	/* Boot message */
 	console_init();
@@ -214,15 +213,18 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				/* RSP palette conversion: 8-bit indexed -> RGBA5551 */
-				data_cache_hit_writeback(screen_buffer, w * h);
-				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
-
-				uint16_t *dst = (uint16_t *)fb->buffer + y_off * 320;
-				rsp_render_start(screen_buffer, dst,
-				                 pal_rgba5551, w * h);
-				rsp_render_wait();
-				data_cache_hit_invalidate(fb->buffer, 320 * 240 * 2);
+				/* CPU palette conversion: 8-bit indexed -> RGBA5551
+				 * 256-entry LUT (512 bytes) fits in L1 cache.
+				 * RSP can't be used: rsp_load() conflicts with
+				 * libdragon's rspq display pipeline. */
+				uint8_t *src8 = (uint8_t *)screen_buffer;
+				uint16_t *dst16 = (uint16_t *)fb->buffer + y_off * 320;
+				for (int i = 0; i < w * h; i += 4) {
+					dst16[i]   = pal_rgba5551[src8[i]];
+					dst16[i+1] = pal_rgba5551[src8[i+1]];
+					dst16[i+2] = pal_rgba5551[src8[i+2]];
+					dst16[i+3] = pal_rgba5551[src8[i+3]];
+				}
 
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
