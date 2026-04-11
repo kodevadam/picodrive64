@@ -229,7 +229,14 @@ int main(int argc, char *argv[])
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
 
-				sprintf(fps_buf, "%d FPS", fps_display);
+				{
+					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
+					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
+					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
+					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
+					sprintf(fps_buf, "%dF L%d S%d P%d",
+						fps_display, lp, sp, fp);
+				}
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
