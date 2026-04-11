@@ -210,21 +210,19 @@ TileFlipMaker_(pix_func,m)
  * per-pixel for tiles with any transparent pixel. */
 static void TileNorm(unsigned char *pd, unsigned int pack, unsigned char pal)
 {
-	/* Check if any nibble is zero */
+	/* Check if all nibbles non-zero (fully opaque tile) */
 	u32 chk = pack - 0x11111111u;
 	chk &= ~pack;
 	if (likely(!(chk & 0x88888888u))) {
-		/* All 8 pixels opaque - fast path: 2 word stores */
-		u32 w0 = ((u32)(pal | ((pack >> 12) & 0xf)) << 24) |
-		         ((u32)(pal | ((pack >>  8) & 0xf)) << 16) |
-		         ((u32)(pal | ((pack >>  4) & 0xf)) <<  8) |
-		         ((u32)(pal | ((pack      ) & 0xf))      );
-		u32 w1 = ((u32)(pal | ((pack >> 28) & 0xf)) << 24) |
-		         ((u32)(pal | ((pack >> 24) & 0xf)) << 16) |
-		         ((u32)(pal | ((pack >> 20) & 0xf)) <<  8) |
-		         ((u32)(pal | ((pack >> 16) & 0xf))      );
-		*(u32 *)(pd + 0) = w0;
-		*(u32 *)(pd + 4) = w1;
+		/* All opaque: 8 unconditional byte stores (no branches) */
+		pd[0] = pal | ((pack >> 12) & 0xf);
+		pd[1] = pal | ((pack >>  8) & 0xf);
+		pd[2] = pal | ((pack >>  4) & 0xf);
+		pd[3] = pal | ((pack      ) & 0xf);
+		pd[4] = pal | ((pack >> 28) & 0xf);
+		pd[5] = pal | ((pack >> 24) & 0xf);
+		pd[6] = pal | ((pack >> 20) & 0xf);
+		pd[7] = pal | ((pack >> 16) & 0xf);
 	} else {
 		unsigned char t;
 		t = (pack&0x0000f000)>>12; if (t) pd[0]=pal|t;
@@ -243,16 +241,14 @@ static void TileFlip(unsigned char *pd, unsigned int pack, unsigned char pal)
 	u32 chk = pack - 0x11111111u;
 	chk &= ~pack;
 	if (likely(!(chk & 0x88888888u))) {
-		u32 w0 = ((u32)(pal | ((pack >> 16) & 0xf)) << 24) |
-		         ((u32)(pal | ((pack >> 20) & 0xf)) << 16) |
-		         ((u32)(pal | ((pack >> 24) & 0xf)) <<  8) |
-		         ((u32)(pal | ((pack >> 28) & 0xf))      );
-		u32 w1 = ((u32)(pal | ((pack      ) & 0xf)) << 24) |
-		         ((u32)(pal | ((pack >>  4) & 0xf)) << 16) |
-		         ((u32)(pal | ((pack >>  8) & 0xf)) <<  8) |
-		         ((u32)(pal | ((pack >> 12) & 0xf))      );
-		*(u32 *)(pd + 0) = w0;
-		*(u32 *)(pd + 4) = w1;
+		pd[0] = pal | ((pack >> 16) & 0xf);
+		pd[1] = pal | ((pack >> 20) & 0xf);
+		pd[2] = pal | ((pack >> 24) & 0xf);
+		pd[3] = pal | ((pack >> 28) & 0xf);
+		pd[4] = pal | ((pack      ) & 0xf);
+		pd[5] = pal | ((pack >>  4) & 0xf);
+		pd[6] = pal | ((pack >>  8) & 0xf);
+		pd[7] = pal | ((pack >> 12) & 0xf);
 	} else {
 		unsigned char t;
 		t = (pack&0x000f0000)>>16; if (t) pd[0]=pal|t;
