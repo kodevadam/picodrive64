@@ -251,7 +251,7 @@ int main(int argc, char *argv[])
 					graphics_make_color(0,0,0,0xFF));
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				/* Flush text pixels to RDRAM so RDP filter sees them */
-				data_cache_hit_writeback(fb->buffer, 320 * 12 * 2);
+				data_cache_hit_writeback(fb->buffer, 320 * 24 * 2);
 				display_show(fb);
 			}
 		}
