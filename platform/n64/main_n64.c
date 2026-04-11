@@ -43,9 +43,23 @@ static void init_color_lut(void)
 }
 
 /* Fast blit using LUT - one table lookup per pixel, no math */
+/* RGBA5551 palette cache for 8-bit alt renderer */
+static uint16_t pal_rgba5551[256];
+
+static void update_palette(void)
+{
+	unsigned short *src = Pico.est.HighPal;
+	for (int i = 0; i < 256; i++) {
+		uint16_t c = src[i];
+		uint16_t r = (c      ) & 0x1f;
+		uint16_t g = (c >>  5) & 0x1f;
+		uint16_t b = (c >> 10) & 0x1f;
+		pal_rgba5551[i] = (r << 11) | (g << 6) | (b << 1) | 1;
+	}
+}
+
 static void blit_frame(surface_t *fb)
 {
-	uint16_t *src = screen_buffer;
 	uint16_t *dst = (uint16_t *)fb->buffer;
 	int h = g_screen_height;
 	int w = g_screen_width;
@@ -54,14 +68,36 @@ static void blit_frame(surface_t *fb)
 	if (y_off > 0)
 		memset(dst, 0, 320 * 240 * 2);
 
-	for (int y = 0; y < h; y++) {
-		uint16_t *s = &src[y * 320];
-		uint16_t *d = &dst[(y + y_off) * 320];
-		for (int x = 0; x < w; x += 4) {
-			d[x]   = bgr555_to_rgba5551[s[x]   & 0x7fff];
-			d[x+1] = bgr555_to_rgba5551[s[x+1] & 0x7fff];
-			d[x+2] = bgr555_to_rgba5551[s[x+2] & 0x7fff];
-			d[x+3] = bgr555_to_rgba5551[s[x+3] & 0x7fff];
+	/* Check if alt renderer is active (8-bit Draw2FB) */
+	if (PicoIn.opt & POPT_ALT_RENDERER) {
+		/* 8-bit indexed -> RGBA5551 via palette */
+		if (Pico.m.dirtyPal) {
+			PicoDrawUpdateHighPal();
+			update_palette();
+		}
+		unsigned char *src8 = Pico.est.Draw2FB + 328 * 8 + 8;
+		for (int y = 0; y < h; y++) {
+			unsigned char *s = &src8[y * 328];
+			uint16_t *d = &dst[(y + y_off) * 320];
+			for (int x = 0; x < w; x += 4) {
+				d[x]   = pal_rgba5551[s[x]];
+				d[x+1] = pal_rgba5551[s[x+1]];
+				d[x+2] = pal_rgba5551[s[x+2]];
+				d[x+3] = pal_rgba5551[s[x+3]];
+			}
+		}
+	} else {
+		/* 16-bit BGR555 -> RGBA5551 via LUT */
+		uint16_t *src = screen_buffer;
+		for (int y = 0; y < h; y++) {
+			uint16_t *s = &src[y * 320];
+			uint16_t *d = &dst[(y + y_off) * 320];
+			for (int x = 0; x < w; x += 4) {
+				d[x]   = bgr555_to_rgba5551[s[x]   & 0x7fff];
+				d[x+1] = bgr555_to_rgba5551[s[x+1] & 0x7fff];
+				d[x+2] = bgr555_to_rgba5551[s[x+2] & 0x7fff];
+				d[x+3] = bgr555_to_rgba5551[s[x+3] & 0x7fff];
+			}
 		}
 	}
 }
@@ -96,7 +132,7 @@ int main(int argc, char *argv[])
 	 * - Sprite limit disabled
 	 * - Idle loop detection disabled
 	 */
-	PicoIn.opt  = 0;
+	PicoIn.opt  = POPT_ALT_RENDERER;  /* fast full-frame renderer (draw2.c) */
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
@@ -120,9 +156,10 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* 16-bit BGR555 renderer - writes to screen_buffer */
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
+	/* Alt renderer: 8-bit indexed output to Draw2FB.
+	 * PDF_NONE tells PicoDrive not to set up 16-bit output.
+	 * We convert 8-bit -> RGBA5551 via palette in blit_frame. */
+	PicoDrawSetOutFormat(PDF_NONE, 0);
 
 	printf("  Running!\n");
 	console_render();
