@@ -101,7 +101,6 @@ int main(int argc, char *argv[])
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
-	rsp_render_init();
 
 	/* Boot message */
 	console_init();
@@ -214,24 +213,19 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				/* Flush 8-bit pixel data to RDRAM for RSP */
-				data_cache_hit_writeback(screen_buffer, w * h);
-				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
-				data_cache_hit_writeback(rsp_output, w * h * 2);
-
-				/* Start RSP: convert 8-bit indexed -> RGBA5551
-				 * Use intermediate buffer to avoid corrupting
-				 * libdragon's display buffer lock tracking */
-				rsp_render_start(screen_buffer, rsp_output,
-				                 pal_rgba5551, w * h);
-
-				/* Wait for RSP to finish */
-				rsp_render_wait();
-
-				/* Invalidate cache to see RSP's output, then copy to display */
-				data_cache_hit_invalidate(rsp_output, w * h * 2);
-				memcpy((uint16_t *)fb->buffer + y_off * 320,
-				       rsp_output, w * h * 2);
+				/* CPU palette conversion: 8-bit indexed -> RGBA5551
+				 * 256-entry table is cache-friendly (512 bytes).
+				 * RSP ucode conflicts with libdragon's display
+				 * pipeline, so we do this on CPU for now. */
+				uint8_t *src8 = (uint8_t *)screen_buffer;
+				uint16_t *dst16 = (uint16_t *)fb->buffer + y_off * 320;
+				int npix = w * h;
+				for (int i = 0; i < npix; i += 4) {
+					dst16[i]   = pal_rgba5551[src8[i]];
+					dst16[i+1] = pal_rgba5551[src8[i+1]];
+					dst16[i+2] = pal_rgba5551[src8[i+2]];
+					dst16[i+3] = pal_rgba5551[src8[i+3]];
+				}
 
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
