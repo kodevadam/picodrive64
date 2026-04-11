@@ -37,7 +37,7 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
 /* Audio: PicoDrive writes 16-bit PCM here each frame.
  * Mono at 11025 Hz = minimum FM synthesis overhead. */
-#define SND_RATE 11025
+#define SND_RATE 4000
 static short __attribute__((aligned(8))) snd_buffer[SND_RATE / 50 + 16];
 /* Upmix buffer: mono -> stereo for libdragon (which requires stereo) */
 static short __attribute__((aligned(8))) snd_stereo[2 * (SND_RATE / 50 + 16)];
@@ -199,15 +199,7 @@ int main(int argc, char *argv[])
 	surface_t *pending_fb = NULL;
 
 	for (;;) {
-		/* Skip VDP + Z80 on non-display frames. Z80 skip halves
-		 * sound driver CPU cost; FM registers retain values. */
-		if (frame_count < FRAME_SKIP) {
-			PicoIn.skipFrame = 1;
-			PicoIn.opt &= ~POPT_EN_Z80;
-		} else {
-			PicoIn.skipFrame = 0;
-			PicoIn.opt |= POPT_EN_Z80;
-		}
+		PicoIn.skipFrame = (frame_count < FRAME_SKIP) ? 1 : 0;
 
 		prof_68k_ticks = prof_vdp_ticks = 0;
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;

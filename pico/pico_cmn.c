@@ -387,12 +387,6 @@ static int PicoFrameHints(void)
   p32x_end_blank();
 #endif
 
-#ifdef N64
-  // N64: only generate sound on display frames (skipFrame=0).
-  // Halves FM synthesis CPU cost. Audio buffers for 2 frames
-  // worth of samples on the render frame.
-  if (!skip)
-#endif
   // get samples from sound chips
   PsndGetSamples(y);
 
