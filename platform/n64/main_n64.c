@@ -16,6 +16,7 @@
 #include <rdpq_attach.h>
 #include <rdpq_mode.h>
 #include <rdpq_tex.h>
+#include "rsp_audio.h"
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
 unsigned int prof_68k_ticks = 0;
@@ -126,7 +127,8 @@ int main(int argc, char *argv[])
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	rdpq_init();
-	audio_init(SND_RATE, 4);  /* 22050 Hz, 4 buffers for smooth playback */
+	audio_init(SND_RATE, 4);
+	rsp_audio_init();  /* Register RSP audio overlay with rspq */
 	joypad_init();
 
 	/* Boot message */
@@ -141,14 +143,13 @@ int main(int argc, char *argv[])
 	PicoInit();
 	init_color_lut();
 
-	/* Enable sound: FM + Z80 (minimum for music), mono, low rate */
-	PicoIn.opt  = POPT_EN_FM | POPT_EN_Z80;
+	/* Sound disabled for now - FM synthesis too expensive on CPU.
+	 * RSP audio overlay will handle synthesis in parallel. */
+	PicoIn.opt  = 0;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
-	PicoIn.sndRate = SND_RATE;
-	PicoIn.sndOut = snd_buffer;
-	PicoIn.writeSound = write_sound;
+	PicoIn.sndRate = 11025;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
 	if (!rom_copy) {
@@ -195,15 +196,7 @@ int main(int argc, char *argv[])
 	surface_t *pending_fb = NULL;
 
 	for (;;) {
-		/* Skip VDP on non-display frames, skip Z80 too (halves sound
-		 * CPU cost). FM registers retain values so tones sustain. */
-		if (frame_count < FRAME_SKIP) {
-			PicoIn.skipFrame = 1;
-			PicoIn.opt &= ~POPT_EN_Z80;
-		} else {
-			PicoIn.skipFrame = 0;
-			PicoIn.opt |= POPT_EN_Z80;
-		}
+		PicoIn.skipFrame = (frame_count < FRAME_SKIP) ? 1 : 0;
 
 		prof_68k_ticks = prof_vdp_ticks = 0;
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;

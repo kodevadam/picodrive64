@@ -271,8 +271,10 @@ use_cz80 = 1
 use_sh2drc = 0
 use_svpdrc = 0
 DRC_68K = 1
-# RSP palette converter
-OBJS += platform/n64/rsp_tiles.o platform/n64/rsp_render.o
+# RSP palette converter (unused - RDP blit replaced it)
+#OBJS += platform/n64/rsp_tiles.o platform/n64/rsp_render.o
+# RSP audio overlay
+OBJS += platform/n64/rsp_audio_ovl.o platform/n64/rsp_audio.o
 ifeq "$(N64_EMBEDDED_ROM)" "1"
 # Standalone mode: single file has main + all platform stubs
 OBJS += platform/n64/main_n64.o
@@ -491,34 +493,36 @@ pico/pico_int_offs.h: tools/mkoffsets.sh
 %.o: %.c
 	$(CC) -c $(OBJOUT)$@ $< $(CFLAGS)
 
-# RSP ucode build rule (must come before generic .S rule)
+# RSP overlay build rule: compile .S -> extract text/data -> linkable .o
+# Uses DEFINE_RSP_UCODE symbol naming: rsp_BASENAME_{text,data}_{start,end,size}
 ifeq "$(PLATFORM)" "n64"
-platform/n64/rsp_%.o: platform/n64/rsp_%.S
-	@echo "    [RSP] $<"
-	@SYMPREFIX=$$(echo "$(basename $@)" | tr '/./' '___'); \
+N64_INST ?= /opt/libdragon
+platform/n64/rsp_%_ovl.o: platform/n64/rsp_%.S
+	@echo "    [RSP-OVL] $<"
+	@BASENAME=$$(basename $< .S); \
 	BINARY="$(basename $@).elf"; \
-	TEXTSECTION="$(basename $@).text"; \
-	DATASECTION="$(basename $@).data"; \
+	TEXTSYM=$$(echo "$(basename $@)_text" | tr '/.+-' '____'); \
+	DATASYM=$$(echo "$(basename $@)_data" | tr '/.+-' '____'); \
 	$(CC) -march=mips1 -mabi=32 -Wa,--fatal-warnings \
 		-I$(N64_INST)/mips64-elf/include \
 		-nostartfiles -Wl,-T$(N64_INST)/mips64-elf/lib/rsp.ld \
 		-Wl,--gc-sections -o $$BINARY $<; \
-	$(N64_INST)/bin/mips64-elf-objcopy -O binary -j .text $$BINARY $$TEXTSECTION.bin; \
-	$(N64_INST)/bin/mips64-elf-objcopy -O binary -j .data $$BINARY $$DATASECTION.bin; \
+	$(N64_INST)/bin/mips64-elf-objcopy -O binary -j .text $$BINARY $(basename $@).text.bin; \
+	$(N64_INST)/bin/mips64-elf-objcopy -O binary -j .data $$BINARY $(basename $@).data.bin; \
 	$(N64_INST)/bin/mips64-elf-objcopy -I binary -O elf32-bigmips -B mips4300 \
-		--redefine-sym _binary_$${SYMPREFIX}_text_bin_start=rsp_tiles_text_start \
-		--redefine-sym _binary_$${SYMPREFIX}_text_bin_end=rsp_tiles_text_end \
-		--redefine-sym _binary_$${SYMPREFIX}_text_bin_size=rsp_tiles_text_size \
+		--redefine-sym _binary_$${TEXTSYM}_bin_start=$${BASENAME}_text_start \
+		--redefine-sym _binary_$${TEXTSYM}_bin_end=$${BASENAME}_text_end \
+		--redefine-sym _binary_$${TEXTSYM}_bin_size=$${BASENAME}_text_size \
 		--set-section-alignment .data=8 \
-		--rename-section .text=.data $$TEXTSECTION.bin $$TEXTSECTION.o; \
+		--rename-section .text=.data $(basename $@).text.bin $(basename $@).text.o; \
 	$(N64_INST)/bin/mips64-elf-objcopy -I binary -O elf32-bigmips -B mips4300 \
-		--redefine-sym _binary_$${SYMPREFIX}_data_bin_start=rsp_tiles_data_start \
-		--redefine-sym _binary_$${SYMPREFIX}_data_bin_end=rsp_tiles_data_end \
-		--redefine-sym _binary_$${SYMPREFIX}_data_bin_size=rsp_tiles_data_size \
+		--redefine-sym _binary_$${DATASYM}_bin_start=$${BASENAME}_data_start \
+		--redefine-sym _binary_$${DATASYM}_bin_end=$${BASENAME}_data_end \
+		--redefine-sym _binary_$${DATASYM}_bin_size=$${BASENAME}_data_size \
 		--set-section-alignment .data=8 \
-		--rename-section .text=.data $$DATASECTION.bin $$DATASECTION.o; \
-	$(N64_INST)/bin/mips64-elf-ld -relocatable $$TEXTSECTION.o $$DATASECTION.o -o $@; \
-	rm -f $$BINARY $$TEXTSECTION.bin $$DATASECTION.bin $$TEXTSECTION.o $$DATASECTION.o
+		--rename-section .text=.data $(basename $@).data.bin $(basename $@).data.o; \
+	$(N64_INST)/bin/mips64-elf-ld -relocatable $(basename $@).text.o $(basename $@).data.o -o $@; \
+	rm -f $$BINARY $(basename $@).text.bin $(basename $@).data.bin $(basename $@).text.o $(basename $@).data.o
 endif
 
 .s.o:
