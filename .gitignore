@@ -41,3 +41,4 @@ PicoDrive64.z64
 *.bin
 *.stripped
 *.sym
+*.elf
