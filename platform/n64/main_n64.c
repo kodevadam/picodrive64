@@ -34,16 +34,24 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
-/* Audio: PicoDrive writes stereo 16-bit PCM here each frame */
-#define SND_RATE 22050
-static short __attribute__((aligned(8))) snd_buffer[2 * SND_RATE / 50]; /* stereo, worst case PAL */
+/* Audio: PicoDrive writes 16-bit PCM here each frame.
+ * Mono at 11025 Hz = minimum FM synthesis overhead. */
+#define SND_RATE 11025
+static short __attribute__((aligned(8))) snd_buffer[SND_RATE / 50 + 16];
+/* Upmix buffer: mono -> stereo for libdragon (which requires stereo) */
+static short __attribute__((aligned(8))) snd_stereo[2 * (SND_RATE / 50 + 16)];
 
 static void write_sound(int len)
 {
-	/* len is in bytes; each stereo sample = 4 bytes */
-	int nsamples = len / 4;
-	if (nsamples > 0)
-		audio_push(snd_buffer, nsamples, false);
+	/* len is in bytes; mono 16-bit = 2 bytes per sample */
+	int nsamples = len / 2;
+	if (nsamples <= 0) return;
+	/* Duplicate mono to stereo for libdragon */
+	for (int i = 0; i < nsamples; i++) {
+		snd_stereo[i*2]   = snd_buffer[i];
+		snd_stereo[i*2+1] = snd_buffer[i];
+	}
+	audio_push(snd_stereo, nsamples, false);
 }
 
 /* Frame skip: 0=none, 1=skip 1, 2=skip 2 */
@@ -133,8 +141,8 @@ int main(int argc, char *argv[])
 	PicoInit();
 	init_color_lut();
 
-	/* Enable sound: FM synthesis + PSG + Z80 (drives sound chips) + stereo */
-	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG | POPT_EN_Z80 | POPT_EN_STEREO;
+	/* Enable sound: FM + Z80 (minimum for music), mono, low rate */
+	PicoIn.opt  = POPT_EN_FM | POPT_EN_Z80;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
