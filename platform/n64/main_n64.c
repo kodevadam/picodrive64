@@ -10,7 +10,6 @@
 
 #include "../common/input_pico.h"
 #include "n64.h"
-#include "rsp_render.h"
 #include "embedded_rom.h"
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
@@ -47,7 +46,7 @@ static void init_color_lut(void)
 }
 
 /* Fast blit using LUT - one table lookup per pixel, no math */
-static uint16_t __attribute__((aligned(16))) rsp_output[320 * 240];
+/* RGBA5551 palette cache for 8-bit alt renderer */
 static uint16_t pal_rgba5551[256];
 
 static void update_palette(void)
@@ -146,7 +145,9 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Accurate renderer, 16-bit BGR555 output */
+	/* Accurate renderer. PDF_8BIT (29 FPS) ≈ PDF_RGB555 (30 FPS)
+	 * because palette work just moves between VDP and blit.
+	 * Use RGB555 since it's marginally faster with VDP skip. */
 	PicoDrawSetOutFormat(PDF_RGB555, 0);
 	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
@@ -199,16 +200,18 @@ int main(int argc, char *argv[])
 			unsigned int tb0 = timer_ticks();
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
-				int h = g_screen_height;
-				int w = g_screen_width;
-				int y_off = (240 - h) / 2;
-
 				blit_frame(fb);
-
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
-
-				sprintf(fps_buf, "%d FPS", fps_display);
+				/* Draw FPS + profile */
+				{
+					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
+					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
+					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
+					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
+					sprintf(fps_buf, "%dF L%d S%d P%d",
+						fps_display, lp, sp, fp);
+				}
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
