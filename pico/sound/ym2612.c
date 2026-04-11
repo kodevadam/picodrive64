@@ -688,6 +688,39 @@ static INLINE void set_sl_rr(FM_SLOT *SLOT, int v)
 
 
 
+#ifdef N64
+/* N64: Decomposed op_calc avoids 208KB ym_tl_tab (L1 cache killer).
+ * Uses ym_sin_tab[256] (512B) + ym_tl_tab2[256] (512B) = 1KB total.
+ * Both tables stay hot in L1 cache. Replaces one 208KB lookup with
+ * two 512B lookups + a shift. */
+static INLINE signed int op_calc(UINT32 phase, unsigned int env, signed int pm)
+{
+	int sin = (phase>>16) + (pm>>1);
+	int neg = sin & 0x200;
+	if (sin & 0x100) sin ^= 0xff;
+	sin &= 0xff;
+	env &= ~1;
+
+	int p = (env << 2) + ym_sin_tab[sin];
+	if (p >= 13*TL_RES_LEN) return 0;
+	int ret = ym_tl_tab2[p & 0xFF] >> (p >> 8);
+	return neg ? -ret : ret;
+}
+
+static INLINE signed int op_calc1(UINT32 phase, unsigned int env, signed int pm)
+{
+	int sin = (phase+pm)>>16;
+	int neg = sin & 0x200;
+	if (sin & 0x100) sin ^= 0xff;
+	sin &= 0xff;
+	env &= ~1;
+
+	int p = (env << 2) + ym_sin_tab[sin];
+	if (p >= 13*TL_RES_LEN) return 0;
+	int ret = ym_tl_tab2[p & 0xFF] >> (p >> 8);
+	return neg ? -ret : ret;
+}
+#else
 static INLINE signed int op_calc(UINT32 phase, unsigned int env, signed int pm)
 {
 	int ret, sin = (phase>>16) + (pm>>1);
@@ -695,10 +728,6 @@ static INLINE signed int op_calc(UINT32 phase, unsigned int env, signed int pm)
 	if (sin & 0x100) sin ^= 0xff;
 	sin&=0xff;
 	env&=~1;
-
-	// this was already checked
-	// if (env >= ENV_QUIET) // 384
-	//	return 0;
 
 	ret = ym_tl_tab[sin | (env<<7)];
 
@@ -713,13 +742,11 @@ static INLINE signed int op_calc1(UINT32 phase, unsigned int env, signed int pm)
 	sin&=0xff;
 	env&=~1;
 
-	// if (env >= ENV_QUIET) // 384
-	//	return 0;
-
 	ret = ym_tl_tab[sin | (env<<7)];
 
 	return neg ? -ret : ret;
 }
+#endif
 
 #if !defined(_ASM_YM2612_C) || defined(EXTERNAL_YM2612)
 /* advance LFO to next sample */

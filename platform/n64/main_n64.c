@@ -143,13 +143,16 @@ int main(int argc, char *argv[])
 	PicoInit();
 	init_color_lut();
 
-	/* Sound disabled for now - FM synthesis too expensive on CPU.
-	 * RSP audio overlay will handle synthesis in parallel. */
-	PicoIn.opt  = 0;
+	/* Enable sound: FM + Z80 + mono at 11025 Hz.
+	 * FM uses decomposed 1KB tables (L1 cache friendly) instead
+	 * of the default 208KB ym_tl_tab. */
+	PicoIn.opt  = POPT_EN_FM | POPT_EN_Z80;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
-	PicoIn.sndRate = 11025;
+	PicoIn.sndRate = SND_RATE;
+	PicoIn.sndOut = snd_buffer;
+	PicoIn.writeSound = write_sound;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
 	if (!rom_copy) {
