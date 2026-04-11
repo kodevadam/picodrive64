@@ -488,7 +488,7 @@ pico/pico_int_offs.h: tools/mkoffsets.sh
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # special flags - perhaps fix this someday instead?
-pico/draw.o: CFLAGS += -fno-strict-aliasing
+pico/draw.o: CFLAGS += -fno-strict-aliasing -fno-unroll-loops -finline-limit=50
 pico/draw2.o: CFLAGS += -fno-strict-aliasing
 pico/mode4.o: CFLAGS += -fno-strict-aliasing
 pico/cd/memory.o: CFLAGS += -fno-strict-aliasing
