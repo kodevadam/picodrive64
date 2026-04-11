@@ -19,11 +19,11 @@
 #include "rsp_audio.h"
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
-unsigned int prof_68k_ticks = 0;
-unsigned int prof_vdp_ticks = 0;
-unsigned int prof_vdp_layer_ticks = 0;
-unsigned int prof_vdp_sprite_ticks = 0;
-unsigned int prof_vdp_final_ticks = 0;
+unsigned int __attribute__((used)) prof_68k_ticks = 0;
+unsigned int __attribute__((used)) prof_vdp_ticks = 0;
+unsigned int __attribute__((used)) prof_vdp_layer_ticks = 0;
+unsigned int __attribute__((used)) prof_vdp_sprite_ticks = 0;
+unsigned int __attribute__((used)) prof_vdp_final_ticks = 0;
 
 
 /* Globals expected by PicoDrive core */
@@ -37,7 +37,7 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
 /* Audio: PicoDrive writes 16-bit PCM here each frame.
  * Mono at 11025 Hz = minimum FM synthesis overhead. */
-#define SND_RATE 4000
+#define SND_RATE 5512
 static short __attribute__((aligned(8))) snd_buffer[SND_RATE / 50 + 16];
 /* Upmix buffer: mono -> stereo for libdragon (which requires stereo) */
 static short __attribute__((aligned(8))) snd_stereo[2 * (SND_RATE / 50 + 16)];
@@ -204,7 +204,13 @@ int main(int argc, char *argv[])
 		prof_68k_ticks = prof_vdp_ticks = 0;
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;
 		unsigned int t0 = timer_ticks();
+
+		/* Skip Z80 on non-display frames to save ~10 FPS */
+		unsigned int saved_opt = PicoIn.opt;
+		if (PicoIn.skipFrame)
+			PicoIn.opt &= ~POPT_EN_Z80;
 		PicoFrame();
+		PicoIn.opt = saved_opt;
 		/* During skip frames, the RDP blit from the previous render
 		 * frame runs in parallel with PicoFrame(). Skip frames don't
 		 * touch screen_buffer (no VDP), so no data race. */
@@ -280,7 +286,7 @@ int main(int argc, char *argv[])
 		}
 
 		joypad_poll();
-		joypad_buttons_t btns = joypad_get_buttons_pressed(JOYPAD_PORT_1);
+		joypad_buttons_t btns = joypad_get_buttons(JOYPAD_PORT_1);
 		joypad_inputs_t inputs = joypad_get_inputs(JOYPAD_PORT_1);
 		unsigned int pad = 0;
 
