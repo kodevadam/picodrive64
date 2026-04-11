@@ -273,8 +273,9 @@ use_svpdrc = 0
 DRC_68K = 1
 # RSP palette converter (unused - RDP blit replaced it)
 #OBJS += platform/n64/rsp_tiles.o platform/n64/rsp_render.o
-# RSP audio overlay
+# RSP audio overlay + FM synthesis overlay
 OBJS += platform/n64/rsp_audio_ovl.o platform/n64/rsp_audio.o
+OBJS += platform/n64/rsp_fm_ovl.o platform/n64/rsp_fm.o
 ifeq "$(N64_EMBEDDED_ROM)" "1"
 # Standalone mode: single file has main + all platform stubs
 OBJS += platform/n64/main_n64.o
