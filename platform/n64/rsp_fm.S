@@ -22,8 +22,13 @@
 
     RSPQ_BeginOverlayHeader
         RSPQ_DefineCommand cmd_fm_render, 12
-        RSPQ_DefineCommand cmd_fm_init_tables, 8
+        RSPQ_DefineCommand cmd_fm_init_tables, 12
     RSPQ_EndOverlayHeader
+
+    RSPQ_BeginSavedState
+    .align 3
+sin_tab:    .space 512      # 256 x u16: phase -> log-sine
+exp_tab:    .space 512      # 256 x u16: log -> linear
 
     ##################################################
     # Algorithm routing table: 8 entries x 8 bytes
@@ -45,11 +50,6 @@ algo_table:
     .byte 1,1,4, 0x0E, 3, 0,0,0    /* algo 5: M1->(C1+M2+C2) */
     .byte 1,0,0, 0x0E, 0, 0,0,0    /* algo 6: (M1->C1)+M2+C2 */
     .byte 0,0,0, 0x0F, 0, 0,0,0    /* algo 7: M1+C1+M2+C2 */
-
-    RSPQ_BeginSavedState
-    .align 3
-sin_tab:    .space 512      # 256 x u16: phase -> log-sine
-exp_tab:    .space 512      # 256 x u16: log -> linear
     RSPQ_EndSavedState
 
     .bss

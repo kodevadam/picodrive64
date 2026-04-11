@@ -66,6 +66,7 @@ static void upload_tables(void)
 	data_cache_hit_writeback(rsp_exp_tab, sizeof(rsp_exp_tab));
 
 	rspq_write(fm_ovl_id, CMD_FM_INIT_TABLES,
+		   0,  /* padding: first arg goes into a0 low bits, not a1 */
 		   PhysicalAddr(rsp_sin_tab),
 		   PhysicalAddr(rsp_exp_tab));
 	rspq_flush();
