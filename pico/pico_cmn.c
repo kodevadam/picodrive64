@@ -11,6 +11,20 @@
 #include "../cpu/drc/drc68k.h"
 #endif
 
+/* Per-frame profiling counters (read by main_n64.c) */
+#ifdef N64
+#include <libdragon.h>
+extern unsigned int prof_68k_ticks;
+extern unsigned int prof_vdp_ticks;
+#define PROF_START() unsigned int _pt = timer_ticks()
+#define PROF_68K()   do { prof_68k_ticks += timer_ticks() - _pt; _pt = timer_ticks(); } while(0)
+#define PROF_VDP()   do { prof_vdp_ticks += timer_ticks() - _pt; _pt = timer_ticks(); } while(0)
+#else
+#define PROF_START()
+#define PROF_68K()
+#define PROF_VDP()
+#endif
+
 #define CYCLES_M68K_LINE     488 // suitable for both PAL/NTSC
 #define CYCLES_M68K_VINT_LAG 112
 
@@ -202,9 +216,11 @@ static int PicoFrameHints(void)
 
     // Run scanline:
     Pico.t.m68c_line_start = Pico.t.m68c_aim;
+    PROF_START();
     do_timing_hacks_start(pv);
     CPUS_RUN(CYCLES_M68K_LINE);
     do_timing_hacks_end(pv);
+    PROF_68K();
 
     if (PicoLineHook) PicoLineHook();
     pevt_log_m68k_o(EVT_NEXT_LINE);
@@ -214,8 +230,10 @@ static int PicoFrameHints(void)
 
   if (!skip)
   {
+    PROF_START();
     if (Pico.est.DrawScanline < y)
       PicoVideoSync(-1);
+    PROF_VDP();
 #ifdef DRAW_FINISH_FUNC
     DRAW_FINISH_FUNC();
 #endif

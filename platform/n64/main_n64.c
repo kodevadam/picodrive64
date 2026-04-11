@@ -12,6 +12,10 @@
 #include "n64.h"
 #include "embedded_rom.h"
 
+/* Profiling counters (written by pico_cmn.c, read here) */
+unsigned int prof_68k_ticks = 0;
+unsigned int prof_vdp_ticks = 0;
+
 /* Globals expected by PicoDrive core */
 char **g_argv;
 void *g_screen_ptr;
@@ -134,11 +138,12 @@ int main(int argc, char *argv[])
 	unsigned int fps_timer = timer_ticks();
 	char fps_buf[40];
 	unsigned int prof_emu = 0, prof_blit = 0;
-	int prof_frames = 0;
 	int prof_emu_pct = 0, prof_blit_pct = 0;
 
 	/* Main loop */
 	for (;;) {
+		prof_68k_ticks = 0;
+		prof_vdp_ticks = 0;
 		unsigned int t0 = timer_ticks();
 		PicoFrame();
 		unsigned int t1 = timer_ticks();
@@ -147,7 +152,6 @@ int main(int argc, char *argv[])
 		/* Update FPS + profile every second */
 		unsigned int now = t1;
 		prof_emu += t1 - t0;
-		prof_frames++;
 		if (TICKS_TO_MS(now - fps_timer) >= 1000) {
 			fps_display = fps_count;
 			fps_count = 0;
@@ -156,7 +160,7 @@ int main(int argc, char *argv[])
 				prof_emu_pct = (int)((uint64_t)prof_emu * 100 / total);
 				prof_blit_pct = (int)((uint64_t)prof_blit * 100 / total);
 			}
-			prof_emu = prof_blit = prof_frames = 0;
+			prof_emu = prof_blit = 0;
 			fps_timer = now;
 		}
 
@@ -169,8 +173,13 @@ int main(int argc, char *argv[])
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
 				/* Draw FPS + profile */
-				sprintf(fps_buf, "%dFPS E%d%% B%d%%",
-					fps_display, prof_emu_pct, prof_blit_pct);
+				{
+					unsigned int et = prof_68k_ticks + prof_vdp_ticks;
+					int cp = et ? (int)((uint64_t)prof_68k_ticks*100/et) : 0;
+					int vp = et ? (int)((uint64_t)prof_vdp_ticks*100/et) : 0;
+					sprintf(fps_buf, "%dF C%d V%d B%d",
+						fps_display, cp, vp, prof_blit_pct);
+				}
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
