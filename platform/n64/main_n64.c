@@ -10,6 +10,7 @@
 
 #include "../common/input_pico.h"
 #include "n64.h"
+#include "rsp_render.h"
 #include "embedded_rom.h"
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
@@ -100,6 +101,7 @@ int main(int argc, char *argv[])
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	joypad_init();
+	rsp_render_init();
 
 	/* Boot message */
 	console_init();
@@ -145,11 +147,10 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Accurate renderer. PDF_8BIT (29 FPS) ≈ PDF_RGB555 (30 FPS)
-	 * because palette work just moves between VDP and blit.
-	 * Use RGB555 since it's marginally faster with VDP skip. */
-	PicoDrawSetOutFormat(PDF_RGB555, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
+	/* 8-bit indexed output: RSP converts palette -> RGBA5551.
+	 * Saves FinalizeLine555 work, and RSP blit runs in parallel. */
+	PicoDrawSetOutFormat(PDF_8BIT, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320);
 
 	printf("  Running!\n");
 	console_render();
@@ -200,18 +201,33 @@ int main(int argc, char *argv[])
 			unsigned int tb0 = timer_ticks();
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
-				blit_frame(fb);
+				int h = g_screen_height;
+				int w = g_screen_width;
+				int y_off = (240 - h) / 2;
+
+				if (y_off > 0)
+					memset(fb->buffer, 0, 320 * 240 * 2);
+
+				/* Update palette if dirty */
+				if (Pico.m.dirtyPal) {
+					PicoDrawUpdateHighPal();
+					update_palette();
+				}
+
+				/* RSP palette conversion: 8-bit indexed -> RGBA5551 */
+				data_cache_hit_writeback(screen_buffer, w * h);
+				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
+
+				uint16_t *dst = (uint16_t *)fb->buffer + y_off * 320;
+				rsp_render_start(screen_buffer, dst,
+				                 pal_rgba5551, w * h);
+				rsp_render_wait();
+				data_cache_hit_invalidate(fb->buffer, 320 * 240 * 2);
+
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
-				/* Draw FPS + profile */
-				{
-					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
-					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
-					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
-					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
-					sprintf(fps_buf, "%dF L%d S%d P%d",
-						fps_display, lp, sp, fp);
-				}
+
+				sprintf(fps_buf, "%d FPS", fps_display);
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}

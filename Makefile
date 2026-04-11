@@ -271,8 +271,8 @@ use_cz80 = 1
 use_sh2drc = 0
 use_svpdrc = 0
 DRC_68K = 1
-# RSP tile decoder (disabled: rsp_init pulls in rspq which conflicts with display)
-#OBJS += platform/n64/rsp_tiles.o platform/n64/rsp_render.o
+# RSP palette converter
+OBJS += platform/n64/rsp_tiles.o platform/n64/rsp_render.o
 ifeq "$(N64_EMBEDDED_ROM)" "1"
 # Standalone mode: single file has main + all platform stubs
 OBJS += platform/n64/main_n64.o
