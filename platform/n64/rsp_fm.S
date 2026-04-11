@@ -106,47 +106,9 @@ rsp_op_calc:
     move    v1, zero
 
 #####################################################
-# cmd_fm_render: MINIMAL TEST VERSION
-# Just DMA in state, zero output, DMA out
-# a0 = cmd | num_samples (low 16 bits)
-# a1 = RDRAM rsp_fm_state (340 bytes)
-# a2 = RDRAM output buffer (s32 mono)
+# cmd_fm_render: NO-OP TEST
+# Just return immediately to test overlay switching
 #####################################################
 cmd_fm_render:
-    andi    s7, a0, 0xffff
-    move    s5, a2
-
-    # Guard: skip if no samples
-    beq     s7, zero, .fm_done
-    nop
-
-    # DMA in channel state (340 bytes, rounded to 344 by HW)
-    move    s0, a1
-    la      s4, %lo(chan_state)
-    li      t0, 339
-    li      t1, 0
-    jal     DMAIn
-    nop
-
-    # Clear output buffer
-    la      t0, %lo(work_out)
-    sll     t1, s7, 2
-    add     t1, t0, t1
-.clear_loop:
-    sw      zero, 0(t0)
-    addiu   t0, t0, 4
-    bne     t0, t1, .clear_loop
-    nop
-
-    # DMA out zeroed output buffer
-    move    s0, s5
-    la      s4, %lo(work_out)
-    sll     t0, s7, 2
-    addiu   t0, t0, -1
-    li      t1, 0
-    jal     DMAOut
-    nop
-
-.fm_done:
     jr      ra
     nop

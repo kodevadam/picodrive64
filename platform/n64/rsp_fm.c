@@ -80,14 +80,12 @@ static struct rsp_fm_state __attribute__((aligned(8))) fm_state;
 
 void rsp_fm_render(struct rsp_fm_state *state, int32_t *out_buf)
 {
-	upload_tables();
-
-	data_cache_hit_writeback(state, sizeof(*state));
+	/* Skip table upload for now - testing overlay switch */
+	/* upload_tables(); */
 
 	rspq_write(fm_ovl_id, CMD_FM_RENDER,
 		   state->num_samples,
 		   PhysicalAddr(state),
 		   PhysicalAddr(out_buf));
 	rspq_flush();
-	/* Don't wait - let RSP run in parallel with CPU */
 }
