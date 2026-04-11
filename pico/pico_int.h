@@ -947,9 +947,19 @@ static __inline void UpdateSAT(u32 a, u32 d)
   Pico.est.rendstatus |= PDRAW_DIRTY_SPRITES;
   ((u16 *)&VdpSATCache[2*num])[(a&7) >> 1] = d;
 }
+/* VRAM dirty tracking: count unique words written between rendered frames */
+extern unsigned int vram_dirty_count;
+extern unsigned char vram_dirty_map[0x4000]; /* 16K entries, one per VRAM u32 */
+
 static __inline void VideoWriteVRAM(u32 a, u16 d)
 {
   PicoMem.vram [(u16)a >> 1] = d;
+
+#ifdef N64
+  { unsigned int idx = ((u16)a >> 1) >> 1; /* u32 index into VRAM */
+    if (!vram_dirty_map[idx]) { vram_dirty_map[idx] = 1; vram_dirty_count++; }
+  }
+#endif
 
   if (((a^SATaddr) & SATmask) == 0)
     UpdateSAT(a, d);
