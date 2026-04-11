@@ -132,7 +132,7 @@ int main(int argc, char *argv[])
 	 * - Sprite limit disabled
 	 * - Idle loop detection disabled
 	 */
-	PicoIn.opt  = POPT_ALT_RENDERER;  /* fast full-frame renderer (draw2.c) */
+	PicoIn.opt  = 0;  /* accurate renderer with VDP skip on non-display frames */
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
@@ -156,10 +156,9 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Alt renderer: 8-bit indexed output to Draw2FB.
-	 * PDF_NONE tells PicoDrive not to set up 16-bit output.
-	 * We convert 8-bit -> RGBA5551 via palette in blit_frame. */
-	PicoDrawSetOutFormat(PDF_NONE, 0);
+	/* Accurate 16-bit renderer */
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
 	printf("  Running!\n");
 	console_render();
@@ -179,6 +178,10 @@ int main(int argc, char *argv[])
 
 	/* Main loop */
 	for (;;) {
+		/* Tell PicoDrive to skip VDP rendering on non-display frames.
+		 * This is the big win: VDP is 77% of frame time. */
+		PicoIn.skipFrame = (frame_count < FRAME_SKIP) ? 1 : 0;
+
 		prof_68k_ticks = 0;
 		prof_vdp_ticks = 0;
 		unsigned int t0 = timer_ticks();
