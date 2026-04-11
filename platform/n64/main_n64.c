@@ -146,9 +146,8 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Use 8-bit output so RSP can do palette->RGBA5551 conversion
-	 * in parallel with CPU running next frame's emulation. */
-	PicoDrawSetOutFormat(PDF_8BIT, 0);
+	/* Use 16-bit BGR555 output with accurate renderer.
+	 * PDF_8BIT causes display assertion - needs investigation. */
 	PicoDrawSetOutBuf(screen_buffer, 320);
 
 	printf("  Running!\n");
@@ -204,28 +203,7 @@ int main(int argc, char *argv[])
 				int w = g_screen_width;
 				int y_off = (240 - h) / 2;
 
-				if (y_off > 0)
-					memset(fb->buffer, 0, 320 * 240 * 2);
-
-				/* Update palette if needed */
-				if (Pico.m.dirtyPal) {
-					PicoDrawUpdateHighPal();
-					update_palette();
-				}
-
-				/* CPU palette conversion: 8-bit indexed -> RGBA5551
-				 * 256-entry table is cache-friendly (512 bytes).
-				 * RSP ucode conflicts with libdragon's display
-				 * pipeline, so we do this on CPU for now. */
-				uint8_t *src8 = (uint8_t *)screen_buffer;
-				uint16_t *dst16 = (uint16_t *)fb->buffer + y_off * 320;
-				int npix = w * h;
-				for (int i = 0; i < npix; i += 4) {
-					dst16[i]   = pal_rgba5551[src8[i]];
-					dst16[i+1] = pal_rgba5551[src8[i+1]];
-					dst16[i+2] = pal_rgba5551[src8[i+2]];
-					dst16[i+3] = pal_rgba5551[src8[i+3]];
-				}
+				blit_frame(fb);
 
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
