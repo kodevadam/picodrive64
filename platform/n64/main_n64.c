@@ -77,20 +77,16 @@ static void blit_frame(surface_t *fb)
 	 * We skip FinalizeLine entirely (saves 38% of VDP time).
 	 * HighCol pointer advances per line during rendering, so we use
 	 * the base from est and compute per-line offset. */
-	/* 8-bit indexed -> RGBA5551 via palette */
-	if (Pico.m.dirtyPal) {
-		PicoDrawUpdateHighPal();
-		update_palette();
-	}
-	unsigned char *src8 = (unsigned char *)screen_buffer;
+	/* BGR555 -> RGBA5551 via LUT */
+	uint16_t *src = screen_buffer;
 	for (int y = 0; y < h; y++) {
-		unsigned char *s = &src8[y * 320];
+		uint16_t *s = &src[y * 320];
 		uint16_t *d = &dst[(y + y_off) * 320];
 		for (int x = 0; x < w; x += 4) {
-			d[x]   = pal_rgba5551[s[x]];
-			d[x+1] = pal_rgba5551[s[x+1]];
-			d[x+2] = pal_rgba5551[s[x+2]];
-			d[x+3] = pal_rgba5551[s[x+3]];
+			d[x]   = bgr555_to_rgba5551[s[x]   & 0x7fff];
+			d[x+1] = bgr555_to_rgba5551[s[x+1] & 0x7fff];
+			d[x+2] = bgr555_to_rgba5551[s[x+2] & 0x7fff];
+			d[x+3] = bgr555_to_rgba5551[s[x+3] & 0x7fff];
 		}
 	}
 }
@@ -149,13 +145,11 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* Use 8-bit renderer (PDF_8BIT) — same accurate tile/sprite
-	 * rendering as PDF_RGB555 but FinalizeLine just copies bytes
-	 * instead of doing palette lookup. We do palette->RGBA5551
-	 * conversion in our blit, skipping the BGR555 intermediate.
-	 * This saves 38% of VDP time (FinalizeLine palette conversion). */
-	PicoDrawSetOutFormat(PDF_8BIT, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320);
+	/* Accurate renderer. PDF_8BIT (29 FPS) ≈ PDF_RGB555 (30 FPS)
+	 * because palette work just moves between VDP and blit.
+	 * Use RGB555 since it's marginally faster with VDP skip. */
+	PicoDrawSetOutFormat(PDF_RGB555, 0);
+	PicoDrawSetOutBuf(screen_buffer, 320 * 2);
 
 	printf("  Running!\n");
 	console_render();
