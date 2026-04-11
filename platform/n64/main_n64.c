@@ -34,6 +34,18 @@ int g_screen_ppitch = 320;
 
 static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
+/* Audio: PicoDrive writes stereo 16-bit PCM here each frame */
+#define SND_RATE 22050
+static short __attribute__((aligned(8))) snd_buffer[2 * SND_RATE / 50]; /* stereo, worst case PAL */
+
+static void write_sound(int len)
+{
+	/* len is in bytes; each stereo sample = 4 bytes */
+	int nsamples = len / 4;
+	if (nsamples > 0)
+		audio_push(snd_buffer, nsamples, false);
+}
+
 /* Frame skip: 0=none, 1=skip 1, 2=skip 2 */
 static int frame_count = 0;
 #define FRAME_SKIP 1
@@ -106,6 +118,7 @@ int main(int argc, char *argv[])
 
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	rdpq_init();
+	audio_init(SND_RATE, 4);  /* 22050 Hz, 4 buffers for smooth playback */
 	joypad_init();
 
 	/* Boot message */
@@ -120,19 +133,14 @@ int main(int argc, char *argv[])
 	PicoInit();
 	init_color_lut();
 
-	/*
-	 * Tier 1 performance: maximum CPU savings
-	 * - No sound chips (FM/PSG/DAC all off)
-	 * - Z80 disabled (only runs sound, wastes ~15-20% CPU when muted)
-	 * - VDP FIFO timing disabled
-	 * - Sprite limit disabled
-	 * - Idle loop detection disabled
-	 */
-	PicoIn.opt  = 0;  /* accurate renderer with VDP skip on non-display frames */
+	/* Enable sound: FM synthesis + PSG + Z80 (drives sound chips) + stereo */
+	PicoIn.opt  = POPT_EN_FM | POPT_EN_PSG | POPT_EN_Z80 | POPT_EN_STEREO;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	PicoIn.opt |= POPT_DIS_IDLE_DET;
-	PicoIn.sndRate = 11025;
+	PicoIn.sndRate = SND_RATE;
+	PicoIn.sndOut = snd_buffer;
+	PicoIn.writeSound = write_sound;
 
 	rom_copy = (unsigned char *)malloc(EMBEDDED_ROM_SIZE + 4);
 	if (!rom_copy) {
