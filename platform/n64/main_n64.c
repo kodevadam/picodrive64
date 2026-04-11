@@ -128,32 +128,49 @@ int main(int argc, char *argv[])
 	display_close();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 
-	/* FPS counter */
+	/* FPS counter + profiling */
 	int fps_count = 0;
 	int fps_display = 0;
 	unsigned int fps_timer = timer_ticks();
-	char fps_buf[16];
+	char fps_buf[40];
+	unsigned int prof_emu = 0, prof_blit = 0;
+	int prof_frames = 0;
+	int prof_emu_pct = 0, prof_blit_pct = 0;
 
 	/* Main loop */
 	for (;;) {
+		unsigned int t0 = timer_ticks();
 		PicoFrame();
+		unsigned int t1 = timer_ticks();
 		fps_count++;
 
-		/* Update FPS display every second */
-		unsigned int now = timer_ticks();
+		/* Update FPS + profile every second */
+		unsigned int now = t1;
+		prof_emu += t1 - t0;
+		prof_frames++;
 		if (TICKS_TO_MS(now - fps_timer) >= 1000) {
 			fps_display = fps_count;
 			fps_count = 0;
+			unsigned int total = now - fps_timer;
+			if (total > 0) {
+				prof_emu_pct = (int)((uint64_t)prof_emu * 100 / total);
+				prof_blit_pct = (int)((uint64_t)prof_blit * 100 / total);
+			}
+			prof_emu = prof_blit = prof_frames = 0;
 			fps_timer = now;
 		}
 
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
+			unsigned int tb0 = timer_ticks();
 			surface_t *fb = display_get();
 			if (fb && fb->buffer) {
 				blit_frame(fb);
-				/* Draw FPS counter */
-				sprintf(fps_buf, "%d FPS", fps_display);
+				unsigned int tb1 = timer_ticks();
+				prof_blit += tb1 - tb0;
+				/* Draw FPS + profile */
+				sprintf(fps_buf, "%dFPS E%d%% B%d%%",
+					fps_display, prof_emu_pct, prof_blit_pct);
 				graphics_draw_text(fb, 4, 4, fps_buf);
 				display_show(fb);
 			}
