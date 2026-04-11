@@ -234,6 +234,8 @@ int main(int argc, char *argv[])
 				rdpq_tex_upload_tlut(pal_rgba5551, 0, 256);
 				rdpq_tex_blit(&ci8_surf, 0, y_off, NULL);
 				rdpq_detach_wait();
+				/* Invalidate CPU cache so we see RDP's framebuffer writes */
+				data_cache_hit_invalidate(fb->buffer, 320 * 240 * 2);
 
 				unsigned int tb1 = timer_ticks();
 				prof_blit += tb1 - tb0;
