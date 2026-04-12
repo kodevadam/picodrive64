@@ -38,7 +38,7 @@ static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
 
 /* Audio: PicoDrive writes 16-bit PCM here each frame.
  * Mono at 11025 Hz = minimum FM synthesis overhead. */
-#define SND_RATE 5512
+#define SND_RATE 11025
 static short __attribute__((aligned(8))) snd_buffer[SND_RATE / 50 + 16];
 /* Upmix buffer: mono -> stereo for libdragon (which requires stereo) */
 static short __attribute__((aligned(8))) snd_stereo[2 * (SND_RATE / 50 + 16)];
