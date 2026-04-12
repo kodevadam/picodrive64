@@ -151,7 +151,7 @@ int main(int argc, char *argv[])
 	PicoIn.opt  = POPT_EN_FM | POPT_EN_Z80;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
 	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
-	PicoIn.opt |= POPT_DIS_IDLE_DET;
+	/* Enable 68K idle detection - skips cycles in idle loops */
 	PicoIn.sndRate = SND_RATE;
 	PicoIn.sndOut = snd_buffer;
 	PicoIn.writeSound = write_sound;
