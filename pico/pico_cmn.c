@@ -151,7 +151,13 @@ static void do_timing_hacks_end(struct PicoVideo *pv)
   PicoVideoFIFOSync(CYCLES_M68K_LINE);
 
   // need rather tight Z80 sync for emulation of main bus cycle stealing
+#ifdef N64
+  // N64: sync Z80 every 8th scanline instead of every 2nd.
+  // Audio at 11025 Hz doesn't need per-scanline Z80 precision.
+  if ((Pico.m.scanline&7) == 7)
+#else
   if (Pico.m.scanline&1)
+#endif
     if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80))
       PicoSyncZ80(Pico.t.m68c_aim);
 }
