@@ -1833,8 +1833,8 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	/* RSP FM synthesis: offload operator math to RSP */
 	if (length > 0 && length <= 256) {
 		extern void rsp_fm_render(struct rsp_fm_state *, int32_t *);
-		static struct rsp_fm_state __attribute__((aligned(8))) rsp_state;
-		static int32_t __attribute__((aligned(8))) rsp_out[256];
+		static struct rsp_fm_state __attribute__((aligned(16))) rsp_state;
+		static int32_t __attribute__((aligned(16))) rsp_out[256];
 		int c;
 
 		/* Extract channel state for RSP */
@@ -1892,8 +1892,8 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 		/* Submit RSP FM and wait */
 		rsp_fm_render(&rsp_state, rsp_out);
 		rspq_wait();
-		data_cache_hit_invalidate(&rsp_state, sizeof(rsp_state));
-		data_cache_hit_invalidate(rsp_out, length * sizeof(int32_t));
+		data_cache_hit_invalidate(&rsp_state, (sizeof(rsp_state) + 15) & ~15);
+		data_cache_hit_invalidate(rsp_out, (length * sizeof(int32_t) + 15) & ~15);
 
 		/* Copy RSP output to FM buffer (mono, accumulate) */
 		for (c = 0; c < length; c++)

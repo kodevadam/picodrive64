@@ -21,8 +21,8 @@ static int tables_uploaded = 0;
 extern UINT16 ym_tl_tab2[];
 
 /* sin_tab is static in ym2612.c, we need our own copy */
-static uint16_t rsp_sin_tab[256] __attribute__((aligned(8)));
-static uint16_t rsp_exp_tab[256] __attribute__((aligned(8)));
+static uint16_t rsp_sin_tab[256] __attribute__((aligned(16)));
+static uint16_t rsp_exp_tab[256] __attribute__((aligned(16)));
 
 enum {
 	CMD_FM_RENDER = 0,
@@ -90,7 +90,7 @@ void rsp_fm_render(struct rsp_fm_state *state, int32_t *out_buf)
 {
 	upload_tables();
 
-	data_cache_hit_writeback(state, sizeof(*state));
+	data_cache_hit_writeback(state, (sizeof(*state) + 15) & ~15);
 
 	rspq_write(fm_ovl_id, CMD_FM_RENDER,
 		   state->num_samples,
