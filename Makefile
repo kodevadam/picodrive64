@@ -276,6 +276,13 @@ DRC_68K = 1
 # RSP audio overlay + FM synthesis overlay
 OBJS += platform/n64/rsp_audio_ovl.o platform/n64/rsp_audio.o
 OBJS += platform/n64/rsp_fm_ovl.o platform/n64/rsp_fm.o
+# RSP overlay C wrappers must not use LTO - the DEFINE_RSP_UCODE symbols
+# get garbage-collected when LTO can't see the overlay binary references
+# RSP overlay C wrappers and main must not use LTO - DEFINE_RSP_UCODE
+# symbols get garbage-collected when LTO can't trace overlay binary refs
+platform/n64/rsp_fm.o: CFLAGS += -fno-lto
+platform/n64/rsp_audio.o: CFLAGS += -fno-lto
+platform/n64/main_n64.o: CFLAGS += -fno-lto
 ifeq "$(N64_EMBEDDED_ROM)" "1"
 # Standalone mode: single file has main + all platform stubs
 OBJS += platform/n64/main_n64.o

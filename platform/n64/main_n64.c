@@ -17,6 +17,7 @@
 #include <rdpq_mode.h>
 #include <rdpq_tex.h>
 #include "rsp_audio.h"
+#include "rsp_fm.h"
 
 /* Profiling counters (written by pico_cmn.c and draw.c, read here) */
 unsigned int __attribute__((used)) prof_68k_ticks = 0;
@@ -129,16 +130,8 @@ int main(int argc, char *argv[])
 	rdpq_init();
 	audio_init(SND_RATE, 4);
 	rsp_audio_init();  /* Register RSP audio overlay with rspq */
+	rsp_fm_init();     /* Register RSP FM synthesis overlay */
 	joypad_init();
-
-	/* Test: send a dummy rsp_audio command to verify overlay switching works */
-	{
-		static int16_t __attribute__((aligned(8))) test_src[8] = {0};
-		static int16_t __attribute__((aligned(8))) test_dst[16] = {0};
-		data_cache_hit_writeback(test_src, sizeof(test_src));
-		rsp_audio_push(test_src, test_dst, 8);
-		rspq_wait();
-	}
 
 	/* Boot message */
 	console_init();

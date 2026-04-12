@@ -1829,7 +1829,7 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	refresh_fc_eg_chan( &ym2612.CH[4] );
 	refresh_fc_eg_chan( &ym2612.CH[5] );
 
-#if 0 /* RSP FM disabled - testing rsp_audio overlay first */
+#ifdef N64
 	/* RSP FM synthesis: offload operator math to RSP */
 	if (length > 0 && length <= 256) {
 		extern void rsp_fm_render(struct rsp_fm_state *, int32_t *);
