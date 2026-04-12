@@ -133,12 +133,6 @@ int main(int argc, char *argv[])
 	rsp_fm_init();     /* Register RSP FM synthesis overlay */
 	joypad_init();
 
-	/* Test RSP FM overlay switch with a no-op command */
-	{
-		extern void rsp_fm_test_noop(void);
-		rsp_fm_test_noop();
-	}
-
 	/* Boot message */
 	console_init();
 	console_set_render_mode(RENDER_MANUAL);
