@@ -53,7 +53,9 @@ static void write_sound(int len)
 		snd_stereo[i*2]   = snd_buffer[i];
 		snd_stereo[i*2+1] = snd_buffer[i];
 	}
-	audio_push(snd_stereo, nsamples, false);
+	/* Blocking push: naturally rate-limits emulator to audio clock.
+	 * Prevents audio speedup when emulation exceeds 60 FPS. */
+	audio_push(snd_stereo, nsamples, true);
 }
 
 /* Frame skip: 0=none, 1=skip 1, 2=skip 2 */
