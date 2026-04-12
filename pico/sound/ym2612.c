@@ -1891,6 +1891,7 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 
 		/* Submit RSP FM (non-blocking) */
 		rsp_fm_render(&rsp_state, rsp_out);
+		rspq_syncpoint_t fm_sync = rspq_syncpoint_new();
 
 		/* Advance envelopes + LFO while RSP computes operators.
 		 * These don't depend on RSP output - only CPU-side state. */
@@ -1932,8 +1933,8 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 		}
 		ym2612.OPN.lfo_cnt += ym2612.OPN.lfo_inc * length;
 
-		/* Now wait for RSP to finish */
-		rspq_wait();
+		/* Wait for RSP FM command specifically (not entire queue) */
+		rspq_syncpoint_wait(fm_sync);
 		data_cache_hit_invalidate(&rsp_state, (sizeof(rsp_state) + 15) & ~15);
 		data_cache_hit_invalidate(rsp_out, (length * sizeof(int32_t) + 15) & ~15);
 
