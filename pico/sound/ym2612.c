@@ -1889,33 +1889,11 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 		}
 		rsp_state.num_samples = length;
 
-		/* Submit RSP FM and wait */
+		/* Submit RSP FM (non-blocking) */
 		rsp_fm_render(&rsp_state, rsp_out);
-		rspq_wait();
-		data_cache_hit_invalidate(&rsp_state, (sizeof(rsp_state) + 15) & ~15);
-		data_cache_hit_invalidate(rsp_out, (length * sizeof(int32_t) + 15) & ~15);
 
-		/* Copy RSP output to FM buffer (mono, accumulate) */
-		for (c = 0; c < length; c++)
-			buffer[c] += rsp_out[c];
-
-		/* Write back RSP-maintained state */
-		for (c = 0; c < 6; c++) {
-			FM_CH *fmch = &ym2612.CH[c];
-			if (!(ym2612.slot_mask & (0xf << (c*4)))) continue;
-
-			fmch->op1_out = rsp_state.ch[c].op1_out;
-			fmch->mem_value = rsp_state.ch[c].mem;
-
-			/* Advance phases (RSP advanced them internally but
-			 * DMA'd back state includes updated phases) */
-			fmch->SLOT[SLOT1].phase = rsp_state.ch[c].phase[0];
-			fmch->SLOT[SLOT2].phase = rsp_state.ch[c].phase[1];
-			fmch->SLOT[SLOT3].phase = rsp_state.ch[c].phase[2];
-			fmch->SLOT[SLOT4].phase = rsp_state.ch[c].phase[3];
-		}
-
-		/* Advance envelope generator (coarse, batched) */
+		/* Advance envelopes + LFO while RSP computes operators.
+		 * These don't depend on RSP output - only CPU-side state. */
 		{
 			UINT32 timer = ym2612.OPN.eg_timer;
 			UINT32 timer_add = ym2612.OPN.eg_timer_add;
@@ -1952,9 +1930,30 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 			}
 			ym2612.OPN.eg_timer = timer;
 		}
-
-		/* Advance LFO */
 		ym2612.OPN.lfo_cnt += ym2612.OPN.lfo_inc * length;
+
+		/* Now wait for RSP to finish */
+		rspq_wait();
+		data_cache_hit_invalidate(&rsp_state, (sizeof(rsp_state) + 15) & ~15);
+		data_cache_hit_invalidate(rsp_out, (length * sizeof(int32_t) + 15) & ~15);
+
+		/* Copy RSP output to FM buffer */
+		for (c = 0; c < length; c++)
+			buffer[c] += rsp_out[c];
+
+		/* Write back RSP-maintained state */
+		for (c = 0; c < 6; c++) {
+			FM_CH *fmch = &ym2612.CH[c];
+			if (!(ym2612.slot_mask & (0xf << (c*4)))) continue;
+
+			fmch->op1_out = rsp_state.ch[c].op1_out;
+			fmch->mem_value = rsp_state.ch[c].mem;
+
+			fmch->SLOT[SLOT1].phase = rsp_state.ch[c].phase[0];
+			fmch->SLOT[SLOT2].phase = rsp_state.ch[c].phase[1];
+			fmch->SLOT[SLOT3].phase = rsp_state.ch[c].phase[2];
+			fmch->SLOT[SLOT4].phase = rsp_state.ch[c].phase[3];
+		}
 
 		return 1;
 	}
