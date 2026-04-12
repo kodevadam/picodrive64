@@ -88,7 +88,7 @@ void rsp_fm_test_noop(void)
 
 void rsp_fm_render(struct rsp_fm_state *state, int32_t *out_buf)
 {
-	upload_tables();
+	/* upload_tables() disabled for debugging */
 
 	data_cache_hit_writeback(state, (sizeof(*state) + 15) & ~15);
 
