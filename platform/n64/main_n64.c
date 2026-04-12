@@ -152,7 +152,7 @@ int main(int argc, char *argv[])
 	 * of the default 208KB ym_tl_tab. */
 	PicoIn.opt  = POPT_EN_FM | POPT_EN_Z80;
 	PicoIn.opt |= POPT_DIS_VDP_FIFO;
-	/* Sprite limit ON (hardware-accurate) - reduces VDP work in heavy scenes */
+	PicoIn.opt |= POPT_DIS_SPRITE_LIM;
 	/* Enable 68K idle detection - skips cycles in idle loops */
 	PicoIn.sndRate = SND_RATE;
 	PicoIn.sndOut = snd_buffer;
