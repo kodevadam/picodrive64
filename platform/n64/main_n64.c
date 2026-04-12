@@ -128,6 +128,7 @@ int main(int argc, char *argv[])
 	g_argv = argv;
 	g_screen_ptr = screen_buffer;
 
+	debug_init_usblog();
 	display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
 	rdpq_init();
 	audio_init(SND_RATE, 4);
@@ -199,6 +200,12 @@ int main(int argc, char *argv[])
 	unsigned int prof_emu = 0, prof_blit = 0;
 	int prof_emu_pct = 0, prof_blit_pct = 0;
 
+	/* Detailed profiling accumulators (ticks per second) */
+	unsigned int prof_68k_acc = 0, prof_vdp_acc = 0;
+	unsigned int prof_snd_acc = 0;
+	unsigned int prof_frame_acc = 0;
+	int prof_68k_pct = 0, prof_vdp_pct = 0, prof_snd_pct = 0;
+
 	/* Main loop - pipelined: RDP blit runs in parallel with skip frame */
 	surface_t *pending_fb = NULL;
 
@@ -223,7 +230,17 @@ int main(int argc, char *argv[])
 
 		/* Update FPS + profile every second */
 		unsigned int now = t1;
-		prof_emu += t1 - t0;
+		unsigned int frame_time = t1 - t0;
+		prof_emu += frame_time;
+		prof_frame_acc += frame_time;
+		prof_68k_acc += prof_68k_ticks;
+		prof_vdp_acc += prof_vdp_ticks;
+		/* Sound time = frame time - 68k - vdp (approximate) */
+		unsigned int snd_time = 0;
+		if (frame_time > prof_68k_ticks + prof_vdp_ticks)
+			snd_time = frame_time - prof_68k_ticks - prof_vdp_ticks;
+		prof_snd_acc += snd_time;
+
 		if (TICKS_TO_MS(now - fps_timer) >= 1000) {
 			fps_display = fps_count;
 			fps_count = 0;
@@ -232,7 +249,15 @@ int main(int argc, char *argv[])
 				prof_emu_pct = (int)((uint64_t)prof_emu * 100 / total);
 				prof_blit_pct = (int)((uint64_t)prof_blit * 100 / total);
 			}
+			if (prof_frame_acc > 0) {
+				prof_68k_pct = (int)((uint64_t)prof_68k_acc * 100 / prof_frame_acc);
+				prof_vdp_pct = (int)((uint64_t)prof_vdp_acc * 100 / prof_frame_acc);
+				prof_snd_pct = (int)((uint64_t)prof_snd_acc * 100 / prof_frame_acc);
+			}
+			debugf("FPS:%d 68K:%d%% VDP:%d%% SND:%d%% (EMU:%d%%)\n",
+				fps_display, prof_68k_pct, prof_vdp_pct, prof_snd_pct, prof_emu_pct);
 			prof_emu = prof_blit = 0;
+			prof_68k_acc = prof_vdp_acc = prof_snd_acc = prof_frame_acc = 0;
 			fps_timer = now;
 		}
 
@@ -251,8 +276,8 @@ int main(int argc, char *argv[])
 					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
 					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
 					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
-					sprintf(fps_buf, "%dF L%d S%d P%d",
-						fps_display, lp, sp, fp);
+					sprintf(fps_buf, "%dF 68k%d V%d S%d",
+						fps_display, prof_68k_pct, prof_vdp_pct, prof_snd_pct);
 				}
 				graphics_draw_text(pending_fb, 4, 4, fps_buf);
 				data_cache_hit_writeback(pending_fb->buffer, 320 * 24 * 2);
