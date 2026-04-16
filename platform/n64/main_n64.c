@@ -259,10 +259,14 @@ int main(int argc, char *argv[])
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;
 		unsigned int t0 = timer_ticks();
 
-		/* Skip Z80 on non-display frames to save ~10 FPS */
+		/* Note: previously we disabled Z80 on skip frames to save ~10 FPS,
+		 * but that breaks DAC voice playback (channel 6 in DAC mode).
+		 * Music tolerates Z80 gaps because FM envelopes self-sustain
+		 * between Z80 register writes.  DAC samples (digitized voice)
+		 * require the Z80 to actively write every PCM byte to YM2612
+		 * register 0x2A in a busy-loop.  Skipping Z80 = missing samples
+		 * = voice stretched to 2x duration ('super slow robot voices'). */
 		unsigned int saved_opt = PicoIn.opt;
-		if (PicoIn.skipFrame)
-			PicoIn.opt &= ~POPT_EN_Z80;
 		PicoFrame();
 		PicoIn.opt = saved_opt;
 		/* During skip frames, the RDP blit from the previous render
