@@ -40,7 +40,8 @@ int g_screen_width  = 320;
 int g_screen_height = 240;
 int g_screen_ppitch = 320;
 
-static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
+static uint8_t __attribute__((aligned(16))) screen_buffer[328 * 240];
+#define SCR_PITCH 328
 
 /* Audio: PicoDrive writes 16-bit PCM here each frame.
  * Mono at 11025 Hz = minimum FM synthesis overhead. */
@@ -136,7 +137,7 @@ static void blit_frame(surface_t *fb)
 	 * HighCol pointer advances per line during rendering, so we use
 	 * the base from est and compute per-line offset. */
 	/* BGR555 -> RGBA5551 via LUT */
-	uint16_t *src = screen_buffer;
+	uint16_t *src = (uint16_t *)(void *)screen_buffer;
 	for (int y = 0; y < h; y++) {
 		uint16_t *s = &src[y * 320];
 		uint16_t *d = &dst[(y + y_off) * 320];
@@ -205,12 +206,14 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* 8-bit indexed output. Pitch=320 keeps tile rendering in
-	 * PicoDrive's internal 328-byte HighCol (hot in L1 cache).
-	 * FinalizeLine copies 320 bytes/line - cheaper than cache misses
-	 * from rendering into a full frame buffer. */
+	/* Alt renderer (draw2.c / PicoFrameFull) for ~15-20% perf win.
+	 * Known to miss per-line / per-frame features that Gleylancer needs
+	 * - capturing screenshots now to diagnose which ones before we
+	 *   selectively add them back to draw2.c. */
 	PicoDrawSetOutFormat(PDF_8BIT, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320);
+	PicoDraw2SetOutBuf(screen_buffer, SCR_PITCH);
+	PicoDrawSetOutBuf(screen_buffer, SCR_PITCH);
+	PicoIn.opt |= POPT_ALT_RENDERER;
 
 	printf("  Running!\n");
 	console_render();
@@ -392,11 +395,13 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				data_cache_hit_writeback(screen_buffer, w * h);
+				unsigned wb_bytes = (SCR_PITCH * h + 15) & ~15;
+				data_cache_hit_writeback(screen_buffer, wb_bytes);
 				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
 
+				/* +8 byte offset skips HighCol left margin; stride 328. */
 				surface_t ci8_surf = surface_make(
-					screen_buffer, FMT_CI8, w, h, w);
+					screen_buffer + 8, FMT_CI8, w, h, SCR_PITCH);
 
 				rdpq_attach(fb, NULL);
 				rdpq_set_mode_standard();
