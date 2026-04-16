@@ -43,6 +43,11 @@ static short __attribute__((aligned(8))) snd_buffer[SND_RATE / 50 + 16];
 /* Upmix buffer: mono -> stereo for libdragon (which requires stereo) */
 static short __attribute__((aligned(8))) snd_stereo[2 * (SND_RATE / 50 + 16)];
 
+/* Audio stats: tracked in write_sound, read by main loop */
+static unsigned int snd_total_samples = 0;
+static unsigned int snd_blocked_count = 0;
+static unsigned int snd_buffer_full_count = 0;
+
 static void write_sound(int len)
 {
 	/* len is in bytes; mono 16-bit = 2 bytes per sample */
@@ -53,6 +58,13 @@ static void write_sound(int len)
 		snd_stereo[i*2]   = snd_buffer[i];
 		snd_stereo[i*2+1] = snd_buffer[i];
 	}
+	/* Track whether audio buffer was already full before push.
+	 * audio_can_write() returns 0 when all internal buffers are full,
+	 * which means push will block (good: rate limiter working).
+	 * If it was >0 when we called, buffer had headroom (no underrun risk). */
+	if (!audio_can_write())
+		snd_blocked_count++;
+	snd_total_samples += nsamples;
 	/* Blocking push: naturally rate-limits emulator to audio clock.
 	 * Prevents audio speedup when emulation exceeds 60 FPS. */
 	audio_push(snd_stereo, nsamples, true);
@@ -197,14 +209,18 @@ int main(int argc, char *argv[])
 	int fps_display = 0;
 	unsigned int fps_timer = timer_ticks();
 	char fps_buf[40];
-	unsigned int prof_emu = 0, prof_blit = 0;
-	int prof_emu_pct = 0, prof_blit_pct = 0;
 
-	/* Detailed profiling accumulators (ticks per second) */
+	/* Detailed profiling accumulators (ticks per second, for on-screen) */
 	unsigned int prof_68k_acc = 0, prof_vdp_acc = 0;
 	unsigned int prof_snd_acc = 0;
 	unsigned int prof_frame_acc = 0;
 	int prof_68k_pct = 0, prof_vdp_pct = 0, prof_snd_pct = 0;
+
+	/* Target frame time at 60 FPS for percentage calculations.
+	 * timer_ticks runs at COUNTS_PER_SECOND, so one 60Hz frame is
+	 * COUNTS_PER_SECOND/60 ticks. Values >100% mean the frame
+	 * overran its budget (we can't hit 60 FPS). */
+	const unsigned int target_frame_ticks = TIMER_TICKS(1000000 / 60);
 
 	/* Main loop - pipelined: RDP blit runs in parallel with skip frame */
 	surface_t *pending_fb = NULL;
@@ -228,36 +244,53 @@ int main(int argc, char *argv[])
 		unsigned int t1 = timer_ticks();
 		fps_count++;
 
-		/* Update FPS + profile every second */
+		/* Per-frame profile line: percentages of target 60Hz frame budget.
+		 * >100% on a category means that category alone exceeds the budget. */
 		unsigned int now = t1;
 		unsigned int frame_time = t1 - t0;
-		prof_emu += frame_time;
-		prof_frame_acc += frame_time;
-		prof_68k_acc += prof_68k_ticks;
-		prof_vdp_acc += prof_vdp_ticks;
-		/* Sound time = frame time - 68k - vdp (approximate) */
 		unsigned int snd_time = 0;
 		if (frame_time > prof_68k_ticks + prof_vdp_ticks)
 			snd_time = frame_time - prof_68k_ticks - prof_vdp_ticks;
+
+		/* Compute per-frame percentages against target 60Hz budget. */
+		unsigned int cpu_pct100 = (uint64_t)prof_68k_ticks * 10000 / target_frame_ticks;
+		unsigned int draw_pct100 = (uint64_t)prof_vdp_ticks * 10000 / target_frame_ticks;
+		unsigned int snd_pct100 = (uint64_t)snd_time * 10000 / target_frame_ticks;
+		unsigned int total_pct100 = (uint64_t)frame_time * 10000 / target_frame_ticks;
+
+		debugf("[PROFILE] cpu:%u.%02u%% vdp:%u.%02u%% snd:%u.%02u%% tot:%u.%02u%% PC:%06x\n",
+			cpu_pct100/100, cpu_pct100%100,
+			draw_pct100/100, draw_pct100%100,
+			snd_pct100/100, snd_pct100%100,
+			total_pct100/100, total_pct100%100,
+			(unsigned)SekPc & 0xFFFFFF);
+
+		/* Accumulate for per-second on-screen display */
+		prof_frame_acc += frame_time;
+		prof_68k_acc += prof_68k_ticks;
+		prof_vdp_acc += prof_vdp_ticks;
 		prof_snd_acc += snd_time;
 
 		if (TICKS_TO_MS(now - fps_timer) >= 1000) {
 			fps_display = fps_count;
 			fps_count = 0;
-			unsigned int total = now - fps_timer;
-			if (total > 0) {
-				prof_emu_pct = (int)((uint64_t)prof_emu * 100 / total);
-				prof_blit_pct = (int)((uint64_t)prof_blit * 100 / total);
-			}
 			if (prof_frame_acc > 0) {
 				prof_68k_pct = (int)((uint64_t)prof_68k_acc * 100 / prof_frame_acc);
 				prof_vdp_pct = (int)((uint64_t)prof_vdp_acc * 100 / prof_frame_acc);
 				prof_snd_pct = (int)((uint64_t)prof_snd_acc * 100 / prof_frame_acc);
 			}
-			debugf("FPS:%d 68K:%d%% VDP:%d%% SND:%d%% (EMU:%d%%)\n",
-				fps_display, prof_68k_pct, prof_vdp_pct, prof_snd_pct, prof_emu_pct);
-			prof_emu = prof_blit = 0;
+			/* Audio stats: sample rate + whether we're blocking on push.
+			 * Blocked count high = rate-limited (good, at target rate).
+			 * Blocked count low = emulator falling behind (underrun risk). */
+			unsigned int expected_samples_per_sec = SND_RATE;
+			int audio_drift_pct = (int)((int64_t)(snd_total_samples - expected_samples_per_sec) * 100 / expected_samples_per_sec);
+			debugf("FPS: %d  AUDIO: %u smp/s (%+d%%) blocked=%u\n",
+				fps_display, snd_total_samples, audio_drift_pct, snd_blocked_count);
+
 			prof_68k_acc = prof_vdp_acc = prof_snd_acc = prof_frame_acc = 0;
+			snd_total_samples = 0;
+			snd_blocked_count = 0;
+			snd_buffer_full_count = 0;
 			fps_timer = now;
 		}
 
@@ -271,14 +304,8 @@ int main(int argc, char *argv[])
 				graphics_set_color(
 					graphics_make_color(0xFF,0xFF,0xFF,0xFF),
 					graphics_make_color(0,0,0,0xFF));
-				{
-					unsigned int vt = prof_vdp_layer_ticks+prof_vdp_sprite_ticks+prof_vdp_final_ticks;
-					int lp = vt ? (int)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
-					int sp = vt ? (int)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
-					int fp = vt ? (int)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
-					sprintf(fps_buf, "%dF 68k%d V%d S%d",
-						fps_display, prof_68k_pct, prof_vdp_pct, prof_snd_pct);
-				}
+				sprintf(fps_buf, "%dF 68k%d V%d S%d",
+					fps_display, prof_68k_pct, prof_vdp_pct, prof_snd_pct);
 				graphics_draw_text(pending_fb, 4, 4, fps_buf);
 				data_cache_hit_writeback(pending_fb->buffer, 320 * 24 * 2);
 				display_show(pending_fb);
