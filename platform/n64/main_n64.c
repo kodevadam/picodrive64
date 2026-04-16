@@ -40,7 +40,12 @@ int g_screen_width  = 320;
 int g_screen_height = 240;
 int g_screen_ppitch = 320;
 
-static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
+/* CI8 output buffer for PicoDrive.  328 bytes per scanline matches the
+ * layout used by both the per-scanline renderer's no-copy mode and the
+ * whole-frame POPT_ALT_RENDERER (draw2.c / PicoFrameFull).  Visible 320
+ * pixels start at byte +8 (the 8-pixel left margin is unused). */
+#define SCR_PITCH 328
+static uint8_t __attribute__((aligned(16))) screen_buffer[SCR_PITCH * 240];
 
 /* Audio: PicoDrive writes 16-bit PCM here each frame.
  * Mono at 11025 Hz = minimum FM synthesis overhead. */
@@ -136,7 +141,7 @@ static void blit_frame(surface_t *fb)
 	 * HighCol pointer advances per line during rendering, so we use
 	 * the base from est and compute per-line offset. */
 	/* BGR555 -> RGBA5551 via LUT */
-	uint16_t *src = screen_buffer;
+	uint16_t *src = (uint16_t *)(void *)screen_buffer;
 	for (int y = 0; y < h; y++) {
 		uint16_t *s = &src[y * 320];
 		uint16_t *d = &dst[(y + y_off) * 320];
@@ -205,12 +210,21 @@ int main(int argc, char *argv[])
 	PicoReset();
 	PicoLoopPrepare();
 
-	/* 8-bit indexed output. Pitch=320 keeps tile rendering in
-	 * PicoDrive's internal 328-byte HighCol (hot in L1 cache).
-	 * FinalizeLine copies 320 bytes/line - cheaper than cache misses
-	 * from rendering into a full frame buffer. */
+	/* 8-bit indexed output.  Enable the whole-frame alt renderer
+	 * (POPT_ALT_RENDERER -> PicoFrameFull in draw2.c): it draws the
+	 * entire frame in one pass instead of 224 per-scanline invocations,
+	 * which avoids most of the per-line setup overhead we saw dominate
+	 * the VDP profile (L ~67-75% of budget).  Accuracy trade-off: loses
+	 * mid-frame raster effects (line scroll, mid-frame palette swaps,
+	 * raster splits).  Gleylancer does not use these significantly.
+	 *
+	 * Both per-scanline and alt renderer share a 328-byte pitch layout,
+	 * so one buffer serves both: alt renderer is primary, per-scanline
+	 * is the fallback (e.g. briefly during forced-blank transitions). */
 	PicoDrawSetOutFormat(PDF_8BIT, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320);
+	PicoDraw2SetOutBuf(screen_buffer, SCR_PITCH);
+	PicoDrawSetOutBuf(screen_buffer, SCR_PITCH);
+	PicoIn.opt |= POPT_ALT_RENDERER;
 
 	printf("  Running!\n");
 	console_render();
@@ -392,11 +406,14 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				data_cache_hit_writeback(screen_buffer, w * h);
+				/* Writeback the full 328-pitch area (round up to 16). */
+				unsigned wb_bytes = (SCR_PITCH * h + 15) & ~15;
+				data_cache_hit_writeback(screen_buffer, wb_bytes);
 				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
 
+				/* Surface starts at +8 byte offset to skip HighCol margin. */
 				surface_t ci8_surf = surface_make(
-					screen_buffer, FMT_CI8, w, h, w);
+					screen_buffer + 8, FMT_CI8, w, h, SCR_PITCH);
 
 				rdpq_attach(fb, NULL);
 				rdpq_set_mode_standard();
