@@ -209,10 +209,15 @@ int main(int argc, char *argv[])
 	/* Alt renderer (draw2.c / PicoFrameFull) for ~15-20% perf win.
 	 * Known to miss per-line / per-frame features that Gleylancer needs
 	 * - capturing screenshots now to diagnose which ones before we
-	 *   selectively add them back to draw2.c. */
+	 *   selectively add them back to draw2.c.
+	 *
+	 * Important: do NOT call PicoDrawSetOutBuf - we don't want the
+	 * per-scanline renderer to also write to screen_buffer.  It would
+	 * fight with draw2.c when VRAM changes mid-frame trigger
+	 * PicoVideoSync (per-scanline + alt-renderer both writing to the
+	 * same buffer at slightly different layouts = visible ghosting). */
 	PicoDrawSetOutFormat(PDF_8BIT, 0);
 	PicoDraw2SetOutBuf(screen_buffer, SCR_PITCH);
-	PicoDrawSetOutBuf(screen_buffer, SCR_PITCH);
 	PicoIn.opt |= POPT_ALT_RENDERER;
 
 	printf("  Running!\n");
