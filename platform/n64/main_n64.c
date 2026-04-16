@@ -399,9 +399,16 @@ int main(int argc, char *argv[])
 				data_cache_hit_writeback(screen_buffer, wb_bytes);
 				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
 
-				/* +8 byte offset skips HighCol left margin; stride 328. */
+				/* draw2.c (alt renderer) writes into buffer starting at
+				 * row 8 (it reserves an 8-row top margin that BackFillFull
+				 * skips past).  Both BackFillFull and DrawSpriteFull assume
+				 * this layout.  Read RDP source from that offset so visible
+				 * content lands correctly.
+				 *   +8 bytes     = skip HighCol left margin (8 pixels)
+				 *   +8*SCR_PITCH = skip draw2 top margin (8 rows) */
 				surface_t ci8_surf = surface_make(
-					screen_buffer + 8, FMT_CI8, w, h, SCR_PITCH);
+					screen_buffer + 8*SCR_PITCH + 8,
+					FMT_CI8, w, h, SCR_PITCH);
 
 				rdpq_attach(fb, NULL);
 				rdpq_set_mode_standard();
