@@ -49,30 +49,40 @@ static short __attribute__((aligned(8))) snd_buffer[SND_RATE / 50 + 16];
 /* Upmix buffer: mono -> stereo for libdragon (which requires stereo) */
 static short __attribute__((aligned(8))) snd_stereo[2 * (SND_RATE / 50 + 16)];
 
-/* Audio stats: tracked in write_sound, read by main loop */
+/* Audio health tracking.
+ *   total_samples   - samples pushed this second (compared to SND_RATE for drift)
+ *   blocked_count   - times audio buffer was full at push time (good: rate limited)
+ *   underrun_count  - times audio buffer drained below 1 buffer (BAD: distortion)
+ *   latest_fill     - most recent "buffers in flight" value (for per-frame output)
+ *
+ * libdragon internally has AUDIO_NUM_BUFFERS buffers.  audio_can_write()
+ * returns how many are currently free/drained.  0 = all full (blocking push).
+ * Full count == NUM_BUFFERS means the DMA drained everything while we weren't
+ * feeding it = underrun = audible clicks/pops. */
 static unsigned int snd_total_samples = 0;
 static unsigned int snd_blocked_count = 0;
-static unsigned int snd_buffer_full_count = 0;
+static unsigned int snd_underrun_count = 0;
+static unsigned int snd_latest_fill = 0;  /* buffers in flight when we pushed */
+
+#define AUDIO_NUM_BUFFERS 4
 
 static void write_sound(int len)
 {
-	/* len is in bytes; mono 16-bit = 2 bytes per sample */
 	int nsamples = len / 2;
 	if (nsamples <= 0) return;
-	/* Duplicate mono to stereo for libdragon */
 	for (int i = 0; i < nsamples; i++) {
 		snd_stereo[i*2]   = snd_buffer[i];
 		snd_stereo[i*2+1] = snd_buffer[i];
 	}
-	/* Track whether audio buffer was already full before push.
-	 * audio_can_write() returns 0 when all internal buffers are full,
-	 * which means push will block (good: rate limiter working).
-	 * If it was >0 when we called, buffer had headroom (no underrun risk). */
-	if (!audio_can_write())
+	int free_bufs = audio_can_write();
+	if (free_bufs <= 0)
 		snd_blocked_count++;
+	/* Underrun: hardware has fully drained - playback gap audible. */
+	if (free_bufs >= AUDIO_NUM_BUFFERS)
+		snd_underrun_count++;
+	/* In-flight = total - free (for reporting). */
+	snd_latest_fill = (unsigned)(AUDIO_NUM_BUFFERS - free_bufs);
 	snd_total_samples += nsamples;
-	/* Blocking push: naturally rate-limits emulator to audio clock.
-	 * Prevents audio speedup when emulation exceeds 60 FPS. */
 	audio_push(snd_stereo, nsamples, true);
 }
 
@@ -228,6 +238,9 @@ int main(int argc, char *argv[])
 	 * overran its budget (we can't hit 60 FPS). */
 	const unsigned int target_frame_ticks = TIMER_TICKS(1000000 / 60);
 
+	/* Frametime min/max tracking over the 1-second window. */
+	unsigned int ft_min_us = 0, ft_max_us = 0;
+
 	/* Main loop - pipelined: RDP blit runs in parallel with skip frame */
 	surface_t *pending_fb = NULL;
 
@@ -250,32 +263,52 @@ int main(int argc, char *argv[])
 		unsigned int t1 = timer_ticks();
 		fps_count++;
 
-		/* Per-frame profile line: percentages of target 60Hz frame budget.
-		 * >100% on a category means that category alone exceeds the budget. */
+		/* Per-frame profile line: instantaneous FPS, frametime, + budget %.
+		 * tot>100% on any category means that category alone cannot hit 60 FPS. */
 		unsigned int now = t1;
 		unsigned int frame_time = t1 - t0;
 		unsigned int snd_time = 0;
 		if (frame_time > prof_68k_ticks + prof_vdp_ticks)
 			snd_time = frame_time - prof_68k_ticks - prof_vdp_ticks;
 
-		/* Compute per-frame percentages against target 60Hz budget. */
+		/* frame_time_us for ms conversion and instantaneous FPS. */
+		unsigned int frame_us = (unsigned int)TIMER_MICROS_LL(frame_time);
+		unsigned int inst_fps_x10 = frame_us ? (unsigned int)(10000000ULL / frame_us) : 0;
+
+		/* Percentages of 60Hz frame budget (x100 for 2-decimal print). */
 		unsigned int cpu_pct100 = (uint64_t)prof_68k_ticks * 10000 / target_frame_ticks;
 		unsigned int draw_pct100 = (uint64_t)prof_vdp_ticks * 10000 / target_frame_ticks;
 		unsigned int snd_pct100 = (uint64_t)snd_time * 10000 / target_frame_ticks;
 		unsigned int total_pct100 = (uint64_t)frame_time * 10000 / target_frame_ticks;
 
-		debugf("[PROFILE] cpu:%u.%02u%% vdp:%u.%02u%% snd:%u.%02u%% tot:%u.%02u%% PC:%06x\n",
-			cpu_pct100/100, cpu_pct100%100,
-			draw_pct100/100, draw_pct100%100,
-			snd_pct100/100, snd_pct100%100,
-			total_pct100/100, total_pct100%100,
+		/* VDP sub-breakdown: L (layers) / S (sprites) / F (finalize) as
+		 * percentages of VDP total.  Useful to target specific hot paths. */
+		unsigned int vt = prof_vdp_layer_ticks + prof_vdp_sprite_ticks
+		                + prof_vdp_final_ticks;
+		unsigned int lp = vt ? (unsigned)((uint64_t)prof_vdp_layer_ticks*100/vt) : 0;
+		unsigned int sp = vt ? (unsigned)((uint64_t)prof_vdp_sprite_ticks*100/vt) : 0;
+		unsigned int fp = vt ? (unsigned)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
+
+		unsigned int ft_ms_x10 = frame_us / 100;
+
+		debugf("[F] fps=%u.%u ft=%u.%ums cpu:%u vdp:%u[L%uS%uF%u] snd:%u tot:%u aud:%s PC:%06x\n",
+			inst_fps_x10/10, inst_fps_x10%10,
+			ft_ms_x10/10, ft_ms_x10%10,
+			cpu_pct100/100,
+			draw_pct100/100, lp, sp, fp,
+			snd_pct100/100,
+			total_pct100/100,
+			(snd_latest_fill == 0) ? "drain"
+				: (snd_latest_fill >= AUDIO_NUM_BUFFERS) ? "full" : "ok",
 			(unsigned)SekPc & 0xFFFFFF);
 
-		/* Accumulate for per-second on-screen display */
+		/* Accumulate for per-second summary. */
 		prof_frame_acc += frame_time;
 		prof_68k_acc += prof_68k_ticks;
 		prof_vdp_acc += prof_vdp_ticks;
 		prof_snd_acc += snd_time;
+		if (frame_us > ft_max_us) ft_max_us = frame_us;
+		if (frame_us < ft_min_us || ft_min_us == 0) ft_min_us = frame_us;
 
 		if (TICKS_TO_MS(now - fps_timer) >= 1000) {
 			fps_display = fps_count;
@@ -285,18 +318,33 @@ int main(int argc, char *argv[])
 				prof_vdp_pct = (int)((uint64_t)prof_vdp_acc * 100 / prof_frame_acc);
 				prof_snd_pct = (int)((uint64_t)prof_snd_acc * 100 / prof_frame_acc);
 			}
-			/* Audio stats: sample rate + whether we're blocking on push.
-			 * Blocked count high = rate-limited (good, at target rate).
-			 * Blocked count low = emulator falling behind (underrun risk). */
-			unsigned int expected_samples_per_sec = SND_RATE;
-			int audio_drift_pct = (int)((int64_t)(snd_total_samples - expected_samples_per_sec) * 100 / expected_samples_per_sec);
-			debugf("FPS: %d  AUDIO: %u smp/s (%+d%%) blocked=%u\n",
-				fps_display, snd_total_samples, audio_drift_pct, snd_blocked_count);
+			/* Fixed drift calc: signed subtraction (avoids unsigned
+			 * underflow when we're slow, which was printing +3e7%). */
+			int32_t expected = SND_RATE;
+			int32_t actual = (int32_t)snd_total_samples;
+			int drift_x100 = (int)((int64_t)(actual - expected) * 10000 / expected);
+
+			unsigned int frames_safe = fps_display ? fps_display : 1;
+			unsigned int ft_avg_us = (unsigned int)(TIMER_MICROS_LL(prof_frame_acc) / frames_safe);
+			unsigned int avg_ms_x10 = ft_avg_us / 100;
+			unsigned int min_ms_x10 = ft_min_us / 100;
+			unsigned int max_ms_x10 = ft_max_us / 100;
+
+			debugf("[SEC] fps=%d ft_avg=%u.%ums ft_min=%u.%u ft_max=%u.%u "
+			       "audio=%d/%u(%+d.%02d%%) blk=%u undr=%u\n",
+				fps_display,
+				avg_ms_x10/10, avg_ms_x10%10,
+				min_ms_x10/10, min_ms_x10%10,
+				max_ms_x10/10, max_ms_x10%10,
+				actual, (unsigned)expected,
+				drift_x100/100, (drift_x100<0?-drift_x100:drift_x100)%100,
+				snd_blocked_count, snd_underrun_count);
 
 			prof_68k_acc = prof_vdp_acc = prof_snd_acc = prof_frame_acc = 0;
 			snd_total_samples = 0;
 			snd_blocked_count = 0;
-			snd_buffer_full_count = 0;
+			snd_underrun_count = 0;
+			ft_min_us = ft_max_us = 0;
 			fps_timer = now;
 		}
 
