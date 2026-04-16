@@ -40,7 +40,14 @@ int g_screen_width  = 320;
 int g_screen_height = 240;
 int g_screen_ppitch = 320;
 
-static uint16_t __attribute__((aligned(16))) screen_buffer[320 * 240];
+static uint16_t __attribute__((aligned(16))) screen_buffer[328 * 240 / 2];
+/* Rendered as CI8 (1 byte/pixel) with 328-byte stride:
+ *   +  0..7   : HighCol 8-byte left margin (VDP internal, not displayed)
+ *   +  8..327 : 320 visible pixels
+ * Declared uint16_t to preserve 16-byte alignment guarantees for DMA/RDP,
+ * but interpreted as uint8_t everywhere.
+ */
+#define SCR_PITCH 328
 
 /* Audio: PicoDrive writes 16-bit PCM here each frame.
  * Mono at 11025 Hz = minimum FM synthesis overhead. */
@@ -210,7 +217,10 @@ int main(int argc, char *argv[])
 	 * FinalizeLine copies 320 bytes/line - cheaper than cache misses
 	 * from rendering into a full frame buffer. */
 	PicoDrawSetOutFormat(PDF_8BIT, 0);
-	PicoDrawSetOutBuf(screen_buffer, 320);
+	/* Pitch >= 328 triggers the no-copy mode in draw.c: HighCol is
+	 * set to point directly into screen_buffer, so FinalizeLine8bit
+	 * skips its per-scanline 320-byte blockcpy. ~14-18% VDP savings. */
+	PicoDrawSetOutBuf(screen_buffer, SCR_PITCH);
 
 	printf("  Running!\n");
 	console_render();
@@ -378,11 +388,16 @@ int main(int argc, char *argv[])
 					update_palette();
 				}
 
-				data_cache_hit_writeback(screen_buffer, w * h);
+				/* Writeback the full rendered area (328-stride, h rows).
+				 * Round to multiple of 16 for cache line alignment. */
+				unsigned wb_bytes = (SCR_PITCH * h + 15) & ~15;
+				data_cache_hit_writeback(screen_buffer, wb_bytes);
 				data_cache_hit_writeback(pal_rgba5551, sizeof(pal_rgba5551));
 
+				/* Source surface: skip the 8-byte left margin, stride 328. */
 				surface_t ci8_surf = surface_make(
-					screen_buffer, FMT_CI8, w, h, w);
+					(uint8_t *)screen_buffer + 8,
+					FMT_CI8, w, h, SCR_PITCH);
 
 				rdpq_attach(fb, NULL);
 				rdpq_set_mode_standard();
