@@ -290,9 +290,12 @@ int main(int argc, char *argv[])
 		unsigned int fp = vt ? (unsigned)((uint64_t)prof_vdp_final_ticks*100/vt) : 0;
 
 		unsigned int ft_ms_x10 = frame_us / 100;
+		/* kind: SKIP frames run only CPU+audio (no VDP). RENDER frames
+		 * do the full scanline pipeline. They alternate with FRAME_SKIP=1. */
+		const char *kind = PicoIn.skipFrame ? "SKIP" : "REND";
 
-		debugf("[F] fps=%u.%u ft=%u.%ums cpu:%u vdp:%u[L%uS%uF%u] snd:%u tot:%u aud:%s PC:%06x\n",
-			inst_fps_x10/10, inst_fps_x10%10,
+		debugf("[F] %s ft=%u.%ums cpu:%u vdp:%u[L%uS%uF%u] snd:%u tot:%u aud:%s PC:%06x\n",
+			kind,
 			ft_ms_x10/10, ft_ms_x10%10,
 			cpu_pct100/100,
 			draw_pct100/100, lp, sp, fp,
@@ -301,6 +304,7 @@ int main(int argc, char *argv[])
 			(snd_latest_fill == 0) ? "drain"
 				: (snd_latest_fill >= AUDIO_NUM_BUFFERS) ? "full" : "ok",
 			(unsigned)SekPc & 0xFFFFFF);
+		(void)inst_fps_x10;
 
 		/* Accumulate for per-second summary. */
 		prof_frame_acc += frame_time;
@@ -330,9 +334,17 @@ int main(int argc, char *argv[])
 			unsigned int min_ms_x10 = ft_min_us / 100;
 			unsigned int max_ms_x10 = ft_max_us / 100;
 
-			debugf("[SEC] fps=%d ft_avg=%u.%ums ft_min=%u.%u ft_max=%u.%u "
+			/* fps_display = PicoFrame calls/sec (emulator tick rate).
+			 * Actual displayed frames/sec is lower because of FRAME_SKIP:
+			 * we only blit every (FRAME_SKIP+1)th frame. With FRAME_SKIP=1,
+			 * disp = emu/2.  emu_speed is emu rate as % of native 60Hz. */
+			int disp_fps_x10 = (fps_display * 10) / (FRAME_SKIP + 1);
+			int emu_speed_pct = fps_display * 100 / 60;
+
+			debugf("[SEC] emu_fps=%d disp_fps=%d.%d speed=%d%% "
+			       "ft_avg=%u.%ums ft_min=%u.%u ft_max=%u.%u "
 			       "audio=%d/%u(%+d.%02d%%) blk=%u undr=%u\n",
-				fps_display,
+				fps_display, disp_fps_x10/10, disp_fps_x10%10, emu_speed_pct,
 				avg_ms_x10/10, avg_ms_x10%10,
 				min_ms_x10/10, min_ms_x10%10,
 				max_ms_x10/10, max_ms_x10%10,
@@ -358,8 +370,10 @@ int main(int argc, char *argv[])
 				graphics_set_color(
 					graphics_make_color(0xFF,0xFF,0xFF,0xFF),
 					graphics_make_color(0,0,0,0xFF));
-				sprintf(fps_buf, "%dF 68k%d V%d S%d",
-					fps_display, prof_68k_pct, prof_vdp_pct, prof_snd_pct);
+				/* e%d = emulation fps (PicoFrame/sec), d%d = display fps. */
+				sprintf(fps_buf, "e%d d%d 68k%d V%d S%d",
+					fps_display, fps_display / (FRAME_SKIP + 1),
+					prof_68k_pct, prof_vdp_pct, prof_snd_pct);
 				graphics_draw_text(pending_fb, 4, 4, fps_buf);
 				data_cache_hit_writeback(pending_fb->buffer, 320 * 24 * 2);
 				display_show(pending_fb);
