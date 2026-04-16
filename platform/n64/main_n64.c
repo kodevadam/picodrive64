@@ -2,6 +2,12 @@
  * PicoDrive N64 - Standalone main with embedded ROM
  * 16-bit renderer + optimized BGR555->RGBA5551 blit
  */
+/* Undef NDEBUG so libdragon's debugf() + debug_init_usblog() are real
+ * (not compiled to no-ops). Must come before any libdragon include. */
+#ifdef NDEBUG
+# undef NDEBUG
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
