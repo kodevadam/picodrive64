@@ -1894,42 +1894,46 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 		rspq_syncpoint_t fm_sync = rspq_syncpoint_new();
 
 		/* Advance envelopes + LFO while RSP computes operators.
-		 * These don't depend on RSP output - only CPU-side state. */
+		 * These don't depend on RSP output - only CPU-side state.
+		 *
+		 * Batched: the original per-sample outer loop only updates
+		 * the timer; inner work depends solely on tick count. So we
+		 * collapse the outer loop to one math op and run the inner
+		 * loop `ticks` times. Semantically identical, saves ~length
+		 * iterations of add+compare+branch per batch. This shape
+		 * also maps cleanly to RSP (no scalar mul on RSP: the CPU
+		 * hands ticks over directly when this moves to the RSP). */
 		{
-			UINT32 timer = ym2612.OPN.eg_timer;
-			UINT32 timer_add = ym2612.OPN.eg_timer_add;
-			int i;
+			uint64_t total = (uint64_t)ym2612.OPN.eg_timer
+				+ (uint64_t)ym2612.OPN.eg_timer_add * (uint32_t)length;
+			uint32_t ticks = (uint32_t)(total >> EG_SH);
+			ym2612.OPN.eg_timer = (uint32_t)total & ((1u << EG_SH) - 1);
 
-			for (i = 0; i < length; i++) {
-				timer += timer_add;
-				while (timer >= (UINT32)(1 << EG_SH)) {
-					int ch;
-					timer -= (1 << EG_SH);
-					for (ch = 0; ch < 6; ch++) {
-						if (!(ym2612.slot_mask & (0xf << (ch*4))))
-							continue;
-						if (ym2612.CH[ch].upd_cnt > 0) {
-							ym2612.CH[ch].upd_cnt--;
-							continue;
-						}
-						ym2612.CH[ch].upd_cnt = 2;
-						ym2612.OPN.eg_cnt++;
-						if (ym2612.OPN.eg_cnt >= 4096)
-							ym2612.OPN.eg_cnt = 1;
-						{
-							int s;
-							UINT32 ssg_en = (ym2612.ssg_mask >> (ch*4)) & 0xf;
-							ssg_en = ssg_en && (ym2612.OPN.ST.flags & ST_SSG);
-							for (s = 0; s < 4; s++) {
-								if (ym2612.CH[ch].SLOT[s].state != EG_OFF)
-									update_eg_phase(&ym2612.CH[ch].SLOT[s],
-										ym2612.OPN.eg_cnt, ssg_en);
-							}
+			while (ticks--) {
+				int ch;
+				for (ch = 0; ch < 6; ch++) {
+					if (!(ym2612.slot_mask & (0xf << (ch*4))))
+						continue;
+					if (ym2612.CH[ch].upd_cnt > 0) {
+						ym2612.CH[ch].upd_cnt--;
+						continue;
+					}
+					ym2612.CH[ch].upd_cnt = 2;
+					ym2612.OPN.eg_cnt++;
+					if (ym2612.OPN.eg_cnt >= 4096)
+						ym2612.OPN.eg_cnt = 1;
+					{
+						int s;
+						UINT32 ssg_en = (ym2612.ssg_mask >> (ch*4)) & 0xf;
+						ssg_en = ssg_en && (ym2612.OPN.ST.flags & ST_SSG);
+						for (s = 0; s < 4; s++) {
+							if (ym2612.CH[ch].SLOT[s].state != EG_OFF)
+								update_eg_phase(&ym2612.CH[ch].SLOT[s],
+									ym2612.OPN.eg_cnt, ssg_en);
 						}
 					}
 				}
 			}
-			ym2612.OPN.eg_timer = timer;
 		}
 		ym2612.OPN.lfo_cnt += ym2612.OPN.lfo_inc * length;
 
