@@ -15,27 +15,10 @@ exp_tab:    .space 512       /* 256 x uint16_t */
 
     .bss
     .align 3
-chan_state:  .space 976       /* 6 channels * 160 bytes + 16 bytes globals */
+chan_state:  .space 344       /* 6 channels * 56 bytes + 4 bytes header */
 work_out:   .space 1024      /* up to 256 x int32_t output samples */
 rdram_state: .space 4        /* saved RDRAM addr for state DMA back */
 rdram_out:   .space 4        /* saved RDRAM addr for output DMA */
-
-/* Offsets into chan_state global area (starts after 6 * 160 = 960) */
-#define ST_GLOBAL      960
-#define ST_NUM_SAMPLES 960       /* uint16 */
-#define ST_EG_TICKS    962       /* uint16 */
-#define ST_EG_CNT      964       /* uint32 */
-
-/* Per-channel envelope field offsets (base + 56) */
-#define EG_VOLUME      56    /* int16 [4] -> 56..63 */
-#define EG_TL          64    /* uint16 [4] -> 64..71 */
-#define EG_SL          72    /* uint16 [4] -> 72..79 */
-#define EG_STATE       80    /* uint8 [4] -> 80..83 */
-#define EG_SSG         84    /* uint8 [4] -> 84..87 */
-#define EG_SSGN        88    /* uint8 [4] -> 88..91 */
-#define EG_UPD_CNT     92    /* uint8 */
-#define EG_SSG_EN      93    /* uint8 */
-#define EG_PACK        96    /* uint32 [4][4] -> 96..159 */
 
     .text
 
@@ -89,217 +72,9 @@ cmd_fm_render:
     /* DMA channel state from RDRAM to DMEM */
     move    s0, a1
     li      s4, %lo(chan_state)
-    li      t0, DMA_SIZE(976, 1)
+    li      t0, DMA_SIZE(344, 1)
     jal     DMAIn
     nop
-
-    /* ============================================================
-     * Envelope advancement: run EG state machine for eg_ticks ticks.
-     *
-     * Mirrors CPU batched loop:
-     *   while (ticks--)
-     *     for ch in 0..6:
-     *       if !enabled: continue
-     *       if upd_cnt > 0: upd_cnt--; continue
-     *       upd_cnt = 2
-     *       eg_cnt++; if eg_cnt >= 4096: eg_cnt = 1
-     *       for s in 0..4:
-     *         if state != EG_OFF: update_eg_phase(slot)
-     *
-     * Registers held across the whole block:
-     *   s6 = eg_cnt            s7 = eg_ticks remaining
-     *   t9 = channel base ptr  fp = channel counter (6..0)
-     *   t8 = slot index (0..3) in inner loop
-     * State machine inner scratch: t0-t7, k0 (k1 preserved)
-     *
-     * SSG-EG note: The N64 path does not call update_ssg_eg_channel
-     * (phase modification) -- it was already omitted before this
-     * port. For vol_out, we replicate the ssg&0x0c == 0x0c inversion
-     * so slots using SSG still produce approximately-correct
-     * attenuation.
-     * ============================================================ */
-    lhu     s7, %lo(chan_state) + ST_EG_TICKS
-    lw      s6, %lo(chan_state) + ST_EG_CNT
-    beqz    s7, eg_done
-    nop
-
-eg_tick_loop:
-    li      t9, %lo(chan_state)
-    li      fp, 6
-
-eg_ch_loop:
-    lbu     t0, 43(t9)                 /* enabled */
-    beqz    t0, eg_ch_next
-    nop
-
-    lbu     t0, EG_UPD_CNT(t9)
-    beqz    t0, eg_do_advance
-    nop
-    /* upd_cnt > 0: decrement and skip */
-    addiu   t0, t0, -1
-    b       eg_ch_next
-    sb      t0, EG_UPD_CNT(t9)         /* delay slot */
-
-eg_do_advance:
-    li      t0, 2
-    sb      t0, EG_UPD_CNT(t9)
-    addiu   s6, s6, 1
-    slti    t0, s6, 4096               /* eg_cnt < 4096 ? */
-    bnez    t0, 1f
-    nop
-    li      s6, 1                      /* wrap: eg_cnt = 1 */
-1:
-    /* ---- Per-slot state machine: iterate s = 0..3 ---- */
-    li      t8, 0
-
-eg_slot_loop:
-    /* t0 = &state[slot] (byte) */
-    addu    t0, t9, t8
-    lbu     t1, EG_STATE(t0)
-    beqz    t1, eg_slot_next           /* EG_OFF */
-    nop
-
-    /* pack = eg_pack[slot*4 + (state-1)] (word) */
-    addiu   t2, t1, -1                 /* state-1 in 0..3 */
-    sll     t3, t8, 4                  /* slot * 16 */
-    sll     t2, t2, 2                  /* (state-1) * 4 */
-    addu    t2, t2, t3                 /* slot*16 + (state-1)*4 */
-    addu    t2, t9, t2
-    lw      t3, EG_PACK(t2)            /* pack */
-
-    /* shift = pack >> 24 ; skip if eg_cnt & ((1<<shift)-1) */
-    srl     t4, t3, 24                 /* shift (0..~28) */
-    li      t2, 1
-    sllv    t2, t2, t4
-    addiu   t2, t2, -1                 /* mask */
-    and     t2, s6, t2
-    bnez    t2, eg_slot_next
-    nop
-
-    /* sel = (eg_cnt >> shift) & 7 ; bits = (pack >> (sel*3)) & 7 */
-    srlv    t2, s6, t4
-    andi    t2, t2, 7                  /* sel */
-    sll     t5, t2, 1                  /* sel*2 */
-    addu    t2, t2, t5                 /* sel*3 */
-    srlv    t2, t3, t2
-    andi    t2, t2, 7                  /* bits (0..7) */
-
-    beqz    t2, eg_slot_next           /* bits==0 -> no change */
-    addiu   t2, t2, -1                 /* delay slot: bits-1 (OK if branch taken) */
-
-    /* t2 now = bits-1 (0..6). volume/tl/sl live at slot*2 offsets.
-     * t5 = &slot_halfword for the slot index. */
-    sll     t5, t8, 1
-    addu    t5, t9, t5
-    lh      t6, EG_VOLUME(t5)          /* signed volume */
-    lhu     t7, EG_TL(t5)              /* tl */
-
-    /* Dispatch on state: 4=ATT, 3=DEC, 2=SUS, 1=REL */
-    li      t4, 4
-    beq     t1, t4, eg_state_att
-    li      t4, 3
-    beq     t1, t4, eg_state_dec
-    li      t4, 2
-    beq     t1, t4, eg_state_sus
-    nop
-    /* fallthrough: EG_REL (state==1) */
-
-eg_state_rel:
-    li      t3, 1
-    sllv    t3, t3, t2                 /* eg_inc_val = 1 << (bits-1) */
-    addu    t6, t6, t3
-    slti    t4, t6, 1023
-    bnez    t4, eg_writeback
-    nop
-    li      t6, 1023                   /* clamp */
-    sb      zero, EG_STATE(t0)         /* state = EG_OFF */
-    b       eg_writeback
-    nop
-
-eg_state_sus:
-    li      t3, 1
-    sllv    t3, t3, t2
-    addu    t6, t6, t3
-    slti    t4, t6, 1023
-    bnez    t4, eg_writeback
-    nop
-    li      t6, 1023                   /* clamp, state unchanged */
-    b       eg_writeback
-    nop
-
-eg_state_dec:
-    li      t3, 1
-    sllv    t3, t3, t2
-    addu    t6, t6, t3
-    lhu     t4, EG_SL(t5)              /* sl */
-    slt     t4, t6, t4                 /* volume < sl? */
-    bnez    t4, eg_writeback
-    nop
-    li      t4, 2
-    b       eg_writeback
-    sb      t4, EG_STATE(t0)           /* delay slot: state=EG_SUS */
-
-eg_state_att:
-    /* volume += (~volume << (bits-1)) >> 4 */
-    nor     t3, t6, zero               /* ~volume (32-bit) */
-    sllv    t3, t3, t2                 /* << (bits-1) */
-    sra     t3, t3, 4                  /* >> 4 (signed) */
-    addu    t6, t6, t3
-    slti    t4, t6, 1                  /* volume <= 0? */
-    beqz    t4, eg_writeback
-    nop
-    move    t6, zero                   /* clamp to 0 */
-    lhu     t4, EG_SL(t5)              /* sl */
-    li      t3, 3                      /* EG_DEC */
-    bnez    t4, eg_att_set
-    nop
-    li      t3, 2                      /* EG_SUS */
-eg_att_set:
-    sb      t3, EG_STATE(t0)
-
-eg_writeback:
-    /* t5 -> slot halfword base. Write volume, then vol_out. */
-    sh      t6, EG_VOLUME(t5)
-    /* vol_out = volume + tl
-     * If state>REL and ssg&0x0c==0x0c: vol_out = ((0x200 - volume) & 0x3FF) + tl */
-    lbu     t3, EG_SSG(t0)
-    lbu     t1, EG_STATE(t0)           /* reload state (may have just changed) */
-    li      t4, 0x0c
-    and     t3, t3, t4
-    bne     t3, t4, eg_vout_normal
-    nop
-    slti    t4, t1, 2                  /* state < 2 (i.e. OFF/REL)? */
-    bnez    t4, eg_vout_normal
-    nop
-    li      t3, 0x200
-    subu    t3, t3, t6                 /* 0x200 - volume */
-    andi    t3, t3, 0x3FF              /* & MAX_ATT_INDEX */
-    addu    t3, t3, t7                 /* + tl */
-    b       eg_vout_store
-    nop
-eg_vout_normal:
-    addu    t3, t6, t7                 /* volume + tl */
-eg_vout_store:
-    sh      t3, 32(t5)                 /* vol_out[slot] at base+32+slot*2 */
-
-eg_slot_next:
-    addiu   t8, t8, 1
-    li      t4, 4
-    bne     t8, t4, eg_slot_loop
-    nop
-
-eg_ch_next:
-    addiu   t9, t9, 160                /* next channel */
-    addiu   fp, fp, -1
-    bnez    fp, eg_ch_loop
-    nop
-
-    addiu   s7, s7, -1
-    bnez    s7, eg_tick_loop
-    nop
-
-eg_done:
-    sw      s6, %lo(chan_state) + ST_EG_CNT
 
     /* Clear output buffer */
     li      t3, %lo(work_out)
@@ -615,7 +390,7 @@ no_c2:
     nop
 
 chan_next:
-    addiu   v1, v1, 160
+    addiu   v1, v1, 56
     addiu   fp, fp, -1
     bnez    fp, chan_loop
     nop
@@ -623,7 +398,7 @@ chan_next:
     /* ---- DMA state back to RDRAM ---- */
     lw      s0, %lo(rdram_state)
     li      s4, %lo(chan_state)
-    li      t0, DMA_SIZE(976, 1)
+    li      t0, DMA_SIZE(344, 1)
     jal     DMAOut
     nop
 
