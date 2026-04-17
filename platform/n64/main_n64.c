@@ -39,6 +39,11 @@ unsigned int __attribute__((used)) prof_vdp_final_ticks = 0;
  * alone isn't a reliable signal.  Actual 0x2a writes are. */
 unsigned int __attribute__((used)) ym_dac_writes = 0;
 
+/* Tile renderer selector: 0 = draw2.c CPU path (proven, current default),
+ * 1 = draw_rdp.c RDP path (in development).  Toggle via menu or define
+ * to A/B test while the RDP renderer matures. */
+int __attribute__((used)) n64_use_rdp_tiles = 0;
+
 
 /* Globals expected by PicoDrive core */
 char **g_argv;

@@ -283,6 +283,7 @@ OBJS += platform/n64/rsp_fm_ovl.o platform/n64/rsp_fm.o
 platform/n64/rsp_fm.o: CFLAGS += -fno-lto
 platform/n64/rsp_audio.o: CFLAGS += -fno-lto
 platform/n64/main_n64.o: CFLAGS += -fno-lto
+OBJS += platform/n64/draw_rdp.o
 ifeq "$(N64_EMBEDDED_ROM)" "1"
 # Standalone mode: single file has main + all platform stubs
 OBJS += platform/n64/main_n64.o

@@ -215,7 +215,16 @@ static int PicoFrameHints(void)
       if ((pv->reg[1]&0x40) || y > 100) {
         if (Pico.est.rendstatus & PDRAW_SYNC_NEEDED) {
           PROF_START();
+#ifdef N64
+          extern int n64_use_rdp_tiles;
+          extern void PicoFrameFullRDP(void);
+          if (n64_use_rdp_tiles)
+            PicoFrameFullRDP();
+          else
+            PicoFrameFull();
+#else
           PicoFrameFull();
+#endif
           PROF_VDP();
         }
 #ifdef DRAW_FINISH_FUNC
