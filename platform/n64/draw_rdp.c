@@ -98,7 +98,19 @@ void rdp_tile_draw_demo(unsigned tile_vram_byte_addr, int x, int y,
 
 void PicoFrameFullRDP(void)
 {
-	PicoFrameFull();
+	/* Step 3a: prove that rdpq commands issued from inside PicoFrame
+	 * actually hit the framebuffer that main_n64.c attached BEFORE
+	 * calling PicoFrame.  Paint the whole display area bright red.
+	 * If main_n64.c's attach path is wired up correctly, flipping
+	 * n64_use_rdp_tiles = 1 at runtime should make the screen go
+	 * solid red.  Real tile rendering replaces this body in 3b. */
+	rdpq_set_mode_fill(RGBA32(0xFF, 0x00, 0x00, 0xFF));
+	rdpq_fill_rectangle(0, 0, 320, 240);
+	/* Leave mode in a sane state for anyone else who draws after us
+	 * between now and rdpq_detach. */
+	rdpq_set_mode_standard();
+	rdpq_mode_filter(FILTER_POINT);
+	rdpq_mode_tlut(TLUT_RGBA16);
 }
 
 #endif /* N64 */

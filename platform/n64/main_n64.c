@@ -41,8 +41,12 @@ unsigned int __attribute__((used)) ym_dac_writes = 0;
 
 /* Tile renderer selector: 0 = draw2.c CPU path (proven, current default),
  * 1 = draw_rdp.c RDP path (in development).  Toggle via menu or define
- * to A/B test while the RDP renderer matures. */
-int __attribute__((used)) n64_use_rdp_tiles = 0;
+ * to A/B test while the RDP renderer matures.  For quick command-line
+ * toggling use `EXTRA_CFLAGS=-DN64_RDP_TILES_ON=1`. */
+#ifndef N64_RDP_TILES_ON
+#define N64_RDP_TILES_ON 0
+#endif
+int __attribute__((used)) n64_use_rdp_tiles = N64_RDP_TILES_ON;
 
 
 /* Globals expected by PicoDrive core */
@@ -292,8 +296,54 @@ int main(int argc, char *argv[])
 		unsigned int saved_opt = PicoIn.opt;
 		if (PicoIn.skipFrame && sticky_dac == 0)
 			PicoIn.opt &= ~POPT_EN_Z80;
+
+		/* RDP tile path: acquire + attach the display framebuffer
+		 * BEFORE PicoFrame so PicoFrameFullRDP can issue rdpq
+		 * commands into it.  The CPU path keeps the existing
+		 * post-PicoFrame attach+blit flow below. */
+		surface_t *rdp_fb = NULL;
+		if (n64_use_rdp_tiles && !PicoIn.skipFrame) {
+			/* Finish previous frame's pending blit first so the
+			 * display_get() below can hand us a free buffer. */
+			if (pending_fb) {
+				rspq_wait();
+				data_cache_hit_invalidate(pending_fb->buffer, 320 * 240 * 2);
+				graphics_set_color(
+					graphics_make_color(0xFF,0xFF,0xFF,0xFF),
+					graphics_make_color(0,0,0,0xFF));
+				sprintf(fps_buf, "e%d d%d 68k%d V%d S%d",
+					fps_display, fps_display / (FRAME_SKIP + 1),
+					prof_68k_pct, prof_vdp_pct, prof_snd_pct);
+				graphics_draw_text(pending_fb, 4, 4, fps_buf);
+				data_cache_hit_writeback(pending_fb->buffer, 320 * 24 * 2);
+				display_show(pending_fb);
+				pending_fb = NULL;
+			}
+			rdp_fb = display_get();
+			if (rdp_fb && rdp_fb->buffer) {
+				if (Pico.m.dirtyPal) {
+					PicoDrawUpdateHighPal();
+					update_palette();
+				}
+				rdpq_attach(rdp_fb, NULL);
+				rdpq_set_mode_standard();
+				rdpq_mode_filter(FILTER_POINT);
+				rdpq_mode_tlut(TLUT_RGBA16);
+			} else {
+				rdp_fb = NULL;
+			}
+		}
+
 		PicoFrame();
 		PicoIn.opt = saved_opt;
+
+		/* If we attached for the RDP path, detach now and queue the
+		 * fb for display on the next REND frame -- mirrors the CPU
+		 * path's pending_fb pipeline so timing stays identical. */
+		if (rdp_fb) {
+			rdpq_detach();
+			pending_fb = rdp_fb;
+		}
 		/* During skip frames, the RDP blit from the previous render
 		 * frame runs in parallel with PicoFrame(). Skip frames don't
 		 * touch screen_buffer (no VDP), so no data race. */
@@ -400,6 +450,12 @@ int main(int argc, char *argv[])
 		if (++frame_count > FRAME_SKIP) {
 			frame_count = 0;
 
+			/* RDP tile path handles its own attach/detach/pending_fb
+			 * above (before and after PicoFrame).  Skip the CPU CI8
+			 * blit path entirely in that case. */
+			if (n64_use_rdp_tiles)
+				goto post_render;
+
 			/* Finish previous RDP blit (ran during skip frame) */
 			if (pending_fb) {
 				rspq_wait();
@@ -469,6 +525,7 @@ int main(int argc, char *argv[])
 				rdpq_detach();  /* Non-blocking! RDP runs during next skip frame */
 				pending_fb = fb;
 			}
+post_render: ;
 		}
 
 		joypad_poll();
