@@ -450,6 +450,22 @@ int main(int argc, char *argv[])
 				rdpq_mode_tlut(TLUT_RGBA16);
 				rdpq_tex_upload_tlut(pal_rgba5551, 0, 256);
 				rdpq_tex_blit(&ci8_surf, 0, y_off, NULL);
+
+#ifdef RDP_TILES_DEMO
+				{
+					/* Proof-of-concept: draw Genesis tile 0 at
+					 * (160,120) via CI4 TLUT through the RDP.
+					 * Validates tile+TLUT plumbing on hardware
+					 * before we rewire the main loop. */
+					static uint16_t demo_tlut[64] __attribute__((aligned(8)));
+					extern void rdp_tiles_build_tlut(uint16_t *);
+					extern void rdp_tile_draw_demo(unsigned, int, int, int, const uint16_t *);
+					rdp_tiles_build_tlut(demo_tlut);
+					data_cache_hit_writeback(demo_tlut, sizeof(demo_tlut));
+					rdp_tile_draw_demo(0, 160, 120, 0, demo_tlut);
+				}
+#endif
+
 				rdpq_detach();  /* Non-blocking! RDP runs during next skip frame */
 				pending_fb = fb;
 			}
