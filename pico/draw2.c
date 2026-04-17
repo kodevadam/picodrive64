@@ -9,6 +9,19 @@
 
 #include "pico_int.h"
 
+#ifdef N64
+#include <libdragon.h>
+extern unsigned int prof_vdp_sprite_ticks;
+extern unsigned int prof_vdp_layer_ticks;
+#define PROF2_START() unsigned int _pd = timer_ticks()
+#define PROF2_SPR()   do { prof_vdp_sprite_ticks += timer_ticks() - _pd; _pd = timer_ticks(); } while(0)
+#define PROF2_LAY()   do { prof_vdp_layer_ticks  += timer_ticks() - _pd; _pd = timer_ticks(); } while(0)
+#else
+#define PROF2_START()
+#define PROF2_SPR()
+#define PROF2_LAY()
+#endif
+
 #define START_ROW  0 // which row of tiles to start rendering at?
 #define END_ROW   28 // ..end
 
@@ -650,6 +663,7 @@ static void DrawDisplayFull(void)
 	if (hvwin==1) { winend|=maxcolc<<16; planeend|=maxcolc<<16; }
 
 	HighCache2A[0] = HighCache2B[0] = 0;
+	PROF2_START();
 	if (!(pvid->debug_p & PVD_KILL_B))
 		DrawLayerFull(1, HighCache2B, scrstart, (maxcolc<<16)|scrend, est);
 	if (!(pvid->debug_p & PVD_KILL_A)) switch (hvwin)
@@ -678,11 +692,14 @@ static void DrawDisplayFull(void)
 		DrawLayerFull(0, HighCache2A, scrstart, (maxcolc<<16)|scrend, est);
 		break;
 	}
+	PROF2_LAY();
 	if (!(pvid->debug_p & PVD_KILL_S_LO))
 		DrawAllSpritesFull(0, maxw, est);
+	PROF2_SPR();
 
 	if (HighCache2B[0]) DrawTilesFromCacheF(HighCache2B, est);
 	if (HighCache2A[0]) DrawTilesFromCacheF(HighCache2A, est);
+	PROF2_LAY();
 	if (!(pvid->debug_p & PVD_KILL_A)) switch (hvwin)
 	{
 		case 4:
@@ -704,6 +721,7 @@ static void DrawDisplayFull(void)
 	}
 	if (!(pvid->debug_p & PVD_KILL_S_HI))
 		DrawAllSpritesFull(1, maxw, est);
+	PROF2_SPR();
 }
 
 

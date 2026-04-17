@@ -213,8 +213,11 @@ static int PicoFrameHints(void)
     {
       // find the right moment for frame renderer, when display is no longer blanked
       if ((pv->reg[1]&0x40) || y > 100) {
-        if (Pico.est.rendstatus & PDRAW_SYNC_NEEDED)
+        if (Pico.est.rendstatus & PDRAW_SYNC_NEEDED) {
+          PROF_START();
           PicoFrameFull();
+          PROF_VDP();
+        }
 #ifdef DRAW_FINISH_FUNC
         DRAW_FINISH_FUNC();
 #endif
