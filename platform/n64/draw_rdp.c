@@ -4,35 +4,30 @@
  * Goal: replace draw2.c's per-tile CPU blit (DrawLayerFull /
  * DrawTilesFromCacheF / DrawSpriteFull -> TileX*Y*) with RDP
  * texture-rectangle draws, backed by TMEM-cached Genesis tiles and
- * TLUT palettes.  Expected win: layer rendering drops from ~8-9 ms
- * to ~1-2 ms per frame, unlocking a true 60 fps budget.
+ * TLUT palettes.
  *
- * Status: scaffolding + helpers.  PicoFrameFullRDP() still delegates
- * to the CPU renderer.  The helpers (rdp_tiles_build_tlut,
- * rdp_tile_draw_demo) are callable from main_n64.c after
- * rdpq_attach, and gated by RDP_TILES_DEMO for validation.
+ * Status: validation scaffold.  PicoFrameFullRDP() delegates to the
+ * CPU renderer.  The demo hook below lives after rdpq_attach in
+ * main_n64.c, gated by RDP_TILES_DEMO, and now draws THREE visible
+ * markers to disentangle where the pipeline breaks if the demo
+ * doesn't show up:
  *
- * Attach-point problem: the main loop currently calls rdpq_attach
- * AFTER PicoFrame() returns.  PicoFrameFull runs inside PicoFrame,
- * so rdpq calls from PicoFrameFullRDP would have no destination
- * surface attached.  Before flipping n64_use_rdp_tiles=1 we'll need
- * to restructure main_n64.c so the framebuffer is attached before
- * PicoFrame (or render into a private intermediate surface).
+ *   [1] a bright magenta fill_rectangle at (140,110)-(180,130) --
+ *       tests that rdpq commands queued after rdpq_tex_blit are
+ *       actually rasterized.  If this is invisible we have a
+ *       mode-state or queue-ordering problem.
+ *   [2] a CI4 tile drawn from a *synthetic* in-RAM tile buffer
+ *       (pixel value = 1 everywhere) with a *synthetic* 64-entry
+ *       TLUT (entry 1 = bright cyan).  Bypasses the game's VRAM
+ *       + palette so visibility is independent of game state.
+ *   [3] a CI4 tile drawn from Genesis VRAM[0] with the game's
+ *       actual palette.  If [1] and [2] work but [3] doesn't,
+ *       it's the real-data path that needs fixing.
  *
- * Genesis tile format note: a Genesis tile is 32 bytes, 8 rows of
- * 4 bytes (4bpp, 2 pixels per byte, high nibble = left pixel).
- * This is byte-for-byte identical to RDP CI4 format -- we can
- * upload tile data via DMA without any reformat.  Each tile uses
- * a 4-bit palette (0..15) selecting one of 4 16-color banks in the
- * Genesis CRAM; we map those to rdpq_tile.palette 0..3.
- *
- * Build plan (incremental, each step testable):
- *   1. Scaffold.  [done]
- *   2. Palette/tile helpers + demo draw.  [this commit]
- *   3. Attach-point refactor: attach fb before PicoFrame.
- *   4. PicoFrameFullRDP draws plane B layer via rdpq.
- *   5. Plane A lo, sprites lo, priority cache passes.
- *   6. Window + per-row hscroll variants.
+ * Attach-point problem: the main loop calls rdpq_attach AFTER
+ * PicoFrame() returns.  Real RDP tile rendering inside
+ * PicoFrameFullRDP needs the fb attached first -- that restructure
+ * is step 3 of the plan.
  */
 #ifdef N64
 #include <stdint.h>
@@ -48,10 +43,7 @@
 /* Defined in draw2.c — the existing proven CPU renderer. */
 extern void PicoFrameFull(void);
 
-/* Build a 64-entry RGBA5551 TLUT from Genesis CRAM (HighPal[0..63]).
- * HighPal is already BGR555 as used for the CI8 blit; we just
- * shuffle channel positions to RGBA5551 for the RDP TLUT.  Called
- * when the palette changes. */
+/* Build a 64-entry RGBA5551 TLUT from Genesis CRAM (HighPal[0..63]). */
 void rdp_tiles_build_tlut(uint16_t *tlut_out)
 {
 	const unsigned short *src = Pico.est.HighPal;
@@ -64,39 +56,48 @@ void rdp_tiles_build_tlut(uint16_t *tlut_out)
 	}
 }
 
-/* Demo: draw one Genesis tile via RDP at screen position (x,y) using
- * palette index (0..3).  Call after rdpq_attach and rdpq_set_mode_*.
- * Used only to validate the TMEM/CI4/TLUT plumbing end-to-end; the
- * real renderer will batch upload + batch draw.
- *
- * tile_vram_addr is a byte offset into Pico.vram (which is 64 KB of
- * u16 words for picodrive -- the address here is the raw byte offset
- * matching Genesis nametable tile index * 32). */
 void rdp_tile_draw_demo(unsigned tile_vram_byte_addr, int x, int y,
                         int palette_idx, const uint16_t *tlut)
 {
+	/* --- Marker [1]: bright magenta filled rect ---
+	 * Switch to fill mode, paint the rect, then switch back to
+	 * standard mode for the textured tile draws. */
+	rdpq_set_mode_fill(RGBA32(0xFF, 0x00, 0xFF, 0xFF));
+	rdpq_fill_rectangle(140, 110, 180, 130);
+
+	rdpq_set_mode_standard();
+	rdpq_mode_filter(FILTER_POINT);
+	rdpq_mode_tlut(TLUT_RGBA16);
+
+	/* --- Marker [2]: synthetic tile + synthetic TLUT (cyan) ---
+	 * Every pixel = index 1.  TLUT entry 1 = cyan.  Independent
+	 * of game state -- if this shows, CI4/TMEM/TLUT all work. */
+	static uint16_t test_tlut[64] __attribute__((aligned(8)));
+	static uint8_t  test_tile[32] __attribute__((aligned(8)));
+	test_tlut[1] = (0 << 11) | (31 << 6) | (31 << 1) | 1; /* R=0 G=31 B=31 -> cyan */
+	for (int i = 0; i < 32; i++) test_tile[i] = 0x11; /* both nibbles = 1 */
+	data_cache_hit_writeback(test_tlut, sizeof(test_tlut));
+	data_cache_hit_writeback(test_tile, sizeof(test_tile));
+
+	surface_t test_surf = surface_make(test_tile, FMT_CI4, 8, 8, 4);
+	rdpq_tex_upload_tlut(test_tlut, 0, 64);
+	rdpq_texparms_t pt = { .palette = 0 };
+	rdpq_tex_upload(TILE0, &test_surf, &pt);
+	rdpq_texture_rectangle(TILE0, x - 12, y, x - 4, y + 8, 0, 0);
+
+	/* --- Marker [3]: real Genesis tile + real CRAM TLUT --- */
 	const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
 	                        + (tile_vram_byte_addr & 0xFFE0);
-
-	/* Genesis tile = 32 bytes = 8x8 CI4.  Build a surface wrapper
-	 * over the VRAM bytes; stride is 4 (bytes per row of 8 CI4 px). */
 	surface_t tile_surf = surface_make((void *)tile_src,
 	                                   FMT_CI4, 8, 8, 4);
-
-	/* TMEM: upload TLUT (64 entries) then tile pixels. */
 	rdpq_tex_upload_tlut((void *)tlut, 0, 64);
-
 	rdpq_texparms_t p = { .palette = palette_idx };
 	rdpq_tex_upload(TILE0, &tile_surf, &p);
-
-	rdpq_mode_tlut(TLUT_RGBA16);
-	rdpq_texture_rectangle(TILE0, x, y, x + 8, y + 8, 0, 0);
+	rdpq_texture_rectangle(TILE0, x + 4, y, x + 12, y + 8, 0, 0);
 }
 
 void PicoFrameFullRDP(void)
 {
-	/* Stub: just call the CPU renderer while we build out the RDP
-	 * path.  Runtime toggle (n64_use_rdp_tiles) stays safe. */
 	PicoFrameFull();
 }
 
