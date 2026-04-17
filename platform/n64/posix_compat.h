@@ -13,7 +13,17 @@
 
 #ifdef N64
 
+/* Prevent libpicofe's posix.h from ever trying to do its own dispatch
+ * (it doesn't know about N64).  We provide everything it would have
+ * defined here, so when something later does
+ * `#include "../libpicofe/posix.h"`, the guard short-circuits the
+ * #error-on-unknown-platform path.  Paired with `-include` in the
+ * N64 Makefile section so this compat shim is prepended to every TU. */
+#define LIBPICOFE_POSIX_H
+
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <dir.h>
 
@@ -96,6 +106,17 @@ static inline char *getcwd(char *buf, int size)
 	}
 	return NULL;
 }
+
+/* stat/mkdir stubs: libdragon has no filesystem hierarchy primitives
+ * beyond file open/close, so these are always failure.  Only used on
+ * paths that picodrive's menu/emu code cares about (save dirs etc.). */
+struct stat {
+	unsigned long st_size;
+	unsigned long st_mode;
+	unsigned long st_mtime;
+};
+static inline int stat(const char *path, struct stat *st)  { (void)path; (void)st; return -1; }
+static inline int mkdir(const char *path, int mode)        { (void)path; (void)mode; return -1; }
 
 /* access() stub */
 #ifndef R_OK
