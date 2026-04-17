@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <pico/pico_int.h>
+#include <pico/sound/ym2612.h>
 
 #include "../common/input_pico.h"
 #include "n64.h"
@@ -259,14 +260,16 @@ int main(int argc, char *argv[])
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;
 		unsigned int t0 = timer_ticks();
 
-		/* Note: previously we disabled Z80 on skip frames to save ~10 FPS,
-		 * but that breaks DAC voice playback (channel 6 in DAC mode).
-		 * Music tolerates Z80 gaps because FM envelopes self-sustain
-		 * between Z80 register writes.  DAC samples (digitized voice)
-		 * require the Z80 to actively write every PCM byte to YM2612
-		 * register 0x2A in a busy-loop.  Skipping Z80 = missing samples
-		 * = voice stretched to 2x duration ('super slow robot voices'). */
+		/* Skip Z80 on skip frames to save ~10 FPS -- but only when DAC
+		 * mode is off.  FM music tolerates the Z80 gap (envelopes
+		 * self-sustain), while DAC voice (ch 6, reg 0x2A bytestream)
+		 * does not: skipping Z80 during DAC = missing PCM writes =
+		 * voice stretched 2x.  dacen is the register-0x2B mode bit;
+		 * games clear it when voice is not active, so most gameplay
+		 * still gets the FPS win. */
 		unsigned int saved_opt = PicoIn.opt;
+		if (PicoIn.skipFrame && !ym2612.dacen)
+			PicoIn.opt &= ~POPT_EN_Z80;
 		PicoFrame();
 		PicoIn.opt = saved_opt;
 		/* During skip frames, the RDP blit from the previous render
