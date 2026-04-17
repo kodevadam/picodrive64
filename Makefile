@@ -85,6 +85,10 @@ GIT_REVISION ?= -$(shell git rev-parse --short HEAD || echo unknown)
 endif
 CFLAGS += -DREVISION=\"$(GIT_REVISION)\"
 
+# Command-line build toggles: append your own defines without
+# editing anything, e.g. `make EXTRA_CFLAGS=-DRDP_TILES_DEMO`.
+CFLAGS += $(EXTRA_CFLAGS)
+
 # default settings
 use_libchdr ?= 1
 ifeq "$(ARCH)" "arm"
