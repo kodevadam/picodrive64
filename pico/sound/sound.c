@@ -341,15 +341,15 @@ PICO_INTERNAL void PsndDoFM(int cyc_to)
   // nothing to do if sound is off
   if (!PicoIn.sndOut) return;
 
-  // Q20, number of samples since last call
-  len = (cyc_to * Pico.snd.clkz_mult) - Pico.snd.fm_pos;
-
-  // update position and calculate buffer offset and length
-  pos = (Pico.snd.fm_pos+0x80000) >> 20;
-  Pico.snd.fm_pos += len;
-  len = ((Pico.snd.fm_pos+0x80000) >> 20) - pos;
-  if (len <= 0)
-    return;
+#ifdef N64
+  // N64: defer FM rendering to frame end (PsndRender) so the RSP
+  // gets one big batch instead of dozens of tiny 1-5 sample calls.
+  // Each RSP call has ~700 bytes of DMA overhead, so batching is critical.
+  // Register writes still update ym2612 state immediately; we just render
+  // with the final state. Don't advance fm_pos so PsndRender sees fmlen=0
+  // and renders the full frame.
+  return;
+#endif
 
   // fill buffer
   if (PicoIn.opt & POPT_EN_STEREO) {

@@ -10,6 +10,9 @@
 
 #include "pico_int.h"
 #include "sound/ym2612.h"
+#ifdef DRC_68K
+#include "../cpu/drc/drc68k.h"
+#endif
 
 struct Pico Pico;
 struct PicoMem PicoMem;
@@ -44,6 +47,10 @@ void PicoInit(void)
   PicoVideoInit();
   PicoDrawInit();
   PicoDraw2Init();
+
+#ifdef DRC_68K
+  drc68k_init();
+#endif
 }
 
 // to be called once on emu exit
@@ -247,8 +254,10 @@ void PicoLoopPrepare(void)
 
   if (PicoIn.AHW & PAHW_MCD)
     PicoMCDPrepare();
+#ifndef NO_32X
   if (PicoIn.AHW & PAHW_32X)
     Pico32xPrepare();
+#endif
 }
 
 #include "pico_cmn.c"

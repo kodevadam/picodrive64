@@ -1140,10 +1140,26 @@ void REGPARM(3) sh2_peripheral_write32(u32 a, u32 d, SH2 *sh2);
 #define PicoReset32x()
 #define PicoFrame32x()
 #define PicoUnload32x()
-#define Pico32xStateLoaded()
+#define Pico32xStateLoaded(...)
+#define Pico32xPrepare()
+#define Pico32xStartup()
+#define Pico32xShutdown()
 #define FinalizeLine32xRGB555 NULL
+#define PicoDraw32xSetFrameMode(...)
+#define PicoDrawSetOutFormat32x(...)
+#define PicoDrawSetOutBuf32X(...)
+#define PicoDraw32xLayer(...)
+#define PicoDraw32xLayerMdOnly(...)
+static int Pico32xDrawMode;
+static int (*PicoScan32xBegin)(unsigned int num);
+static int (*PicoScan32xEnd)(unsigned int num);
 #define p32x_pwm_update(...)
 #define p32x_timers_recalc()
+#define p32x_event_times ((unsigned int *)0)
+u32 PicoRead8_32x(u32 a);
+u32 PicoRead16_32x(u32 a);
+void PicoWrite8_32x(u32 a, u32 d);
+void PicoWrite16_32x(u32 a, u32 d);
 #endif
 
 /* avoid dependency on newer glibc */

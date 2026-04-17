@@ -78,6 +78,8 @@ static int menu_w, menu_h;
 #include <platform/ps2/menu.c>
 #elif defined(PANDORA)
 #include <platform/pandora/menu.c>
+#elif defined(N64)
+#include <platform/n64/menu.c>
 #else
 #include <platform/linux/menu.c>
 #endif
@@ -825,8 +827,10 @@ static menu_entry e_menu_adv_options[] =
 	mee_onoff_h   ("Emulate Game Gear LCD",    MA_OPT2_ENABLE_GGLCD  ,PicoIn.opt, POPT_EN_GG_LCD, h_gglcd),
 	mee_range_h   ("Overclock M68k (%)",       MA_OPT2_OVERCLOCK_M68K,currentConfig.overclock_68k, 0, 1000, h_ovrclk),
 	mee_onoff_h   ("Enable dynarecs",          MA_OPT2_DYNARECS,      PicoIn.opt, POPT_EN_DRC, h_dynarec),
+#ifndef NO_32X
 	mee_cust_h    ("Master SH2 cycles",        MA_32XOPT_MSH2_CYCLES, mh_opt_sh2cycles, mgn_opt_sh2cycles, h_sh2cycles),
 	mee_cust_h    ("Slave SH2 cycles",         MA_32XOPT_SSH2_CYCLES, mh_opt_sh2cycles, mgn_opt_sh2cycles, h_sh2cycles),
+#endif
 	MENU_OPTIONS_ADV
 	mee_end,
 };

@@ -7,6 +7,27 @@
  * See COPYING file in the top-level directory.
  */
 
+#ifdef DRC_68K
+#include "../cpu/drc/drc68k.h"
+#endif
+
+/* Per-frame profiling counters (read by main_n64.c) */
+#ifdef N64
+#include <libdragon.h>
+extern unsigned int prof_68k_ticks;
+extern unsigned int prof_vdp_ticks;
+extern unsigned int prof_vdp_layer_ticks;
+extern unsigned int prof_vdp_sprite_ticks;
+extern unsigned int prof_vdp_final_ticks;
+#define PROF_START() unsigned int _pt = timer_ticks()
+#define PROF_68K()   do { prof_68k_ticks += timer_ticks() - _pt; _pt = timer_ticks(); } while(0)
+#define PROF_VDP()   do { prof_vdp_ticks += timer_ticks() - _pt; _pt = timer_ticks(); } while(0)
+#else
+#define PROF_START()
+#define PROF_68K()
+#define PROF_VDP()
+#endif
+
 #define CYCLES_M68K_LINE     488 // suitable for both PAL/NTSC
 #define CYCLES_M68K_VINT_LAG 112
 
@@ -34,7 +55,19 @@ static void SekExecM68k(int cyc_do)
 #elif defined(EMU_M68K)
   Pico.t.m68c_cnt += m68k_execute(cyc_do) - cyc_do;
 #elif defined(EMU_F68K)
+#ifdef DRC_68K
+  {
+    /* Try DRC first, fall back to FAME if block can't be compiled */
+    int drc_cycles = drc68k_execute(&PicoCpuFM68k, PicoCpuFM68k.pc, cyc_do);
+    if (drc_cycles >= 0) {
+      Pico.t.m68c_cnt += drc_cycles - cyc_do;
+    } else {
+      Pico.t.m68c_cnt += fm68k_emulate(&PicoCpuFM68k, cyc_do, 0) - cyc_do;
+    }
+  }
+#else
   Pico.t.m68c_cnt += fm68k_emulate(&PicoCpuFM68k, cyc_do, 0) - cyc_do;
+#endif
 #endif
   SekCyclesLeft = 0;
 }
@@ -118,6 +151,8 @@ static void do_timing_hacks_end(struct PicoVideo *pv)
   PicoVideoFIFOSync(CYCLES_M68K_LINE);
 
   // need rather tight Z80 sync for emulation of main bus cycle stealing
+  // and for DAC voice playback (Z80 writes ~45us-spaced PCM samples;
+  // every-2-scanline sync at 125us is acceptable, every-8 is not).
   if (Pico.m.scanline&1)
     if (Pico.m.z80Run && !Pico.m.z80_reset && (PicoIn.opt&POPT_EN_Z80))
       PicoSyncZ80(Pico.t.m68c_aim);
@@ -186,9 +221,11 @@ static int PicoFrameHints(void)
 
     // Run scanline:
     Pico.t.m68c_line_start = Pico.t.m68c_aim;
+    PROF_START();
     do_timing_hacks_start(pv);
     CPUS_RUN(CYCLES_M68K_LINE);
     do_timing_hacks_end(pv);
+    PROF_68K();
 
     if (PicoLineHook) PicoLineHook();
     pevt_log_m68k_o(EVT_NEXT_LINE);
@@ -198,8 +235,10 @@ static int PicoFrameHints(void)
 
   if (!skip)
   {
+    PROF_START();
     if (Pico.est.DrawScanline < y)
       PicoVideoSync(-1);
+    PROF_VDP();
 #ifdef DRAW_FINISH_FUNC
     DRAW_FINISH_FUNC();
 #endif

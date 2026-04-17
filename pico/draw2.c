@@ -54,7 +54,7 @@ static int TileXnormYnorm(unsigned char *pd,int addr,unsigned char pal, struct P
 	if (est->rendstatus & PDRAW_INTERLACE) inc = 4;
 #endif
 	for(i=8; i; i--, addr+=inc, pd += est->Draw2Width) {
-		pack=*(u32 *)(vram+addr); // Get 8 pixels
+		pack=CPU_LE2(*(u32 *)(vram+addr)); // Get 8 pixels (BE-portable)
 		if(!pack) continue;
 
 		t=pack&0x0000f000; if (t) pd[0]=(unsigned char)((t>>12)|pal);
@@ -81,7 +81,7 @@ static int TileXflipYnorm(unsigned char *pd,int addr,unsigned char pal, struct P
 	if (est->rendstatus & PDRAW_INTERLACE) inc = 4;
 #endif
 	for(i=8; i; i--, addr+=inc, pd += est->Draw2Width) {
-		pack=*(u32 *)(vram+addr); // Get 8 pixels
+		pack=CPU_LE2(*(u32 *)(vram+addr)); // Get 8 pixels (BE-portable)
 		if(!pack) continue;
 
 		t=pack&0x000f0000; if (t) pd[0]=(unsigned char)((t>>16)|pal);
@@ -108,7 +108,7 @@ static int TileXnormYflip(unsigned char *pd,int addr,unsigned char pal, struct P
 #endif
 	addr+=14;
 	for(i=8; i; i--, addr-=inc, pd += est->Draw2Width) {
-		pack=*(u32 *)(vram+addr); // Get 8 pixels
+		pack=CPU_LE2(*(u32 *)(vram+addr)); // Get 8 pixels (BE-portable)
 		if(!pack) continue;
 
 		t=pack&0x0000f000; if (t) pd[0]=(unsigned char)((t>>12)|pal);
@@ -136,7 +136,7 @@ static int TileXflipYflip(unsigned char *pd,int addr,unsigned char pal, struct P
 #endif
 	addr+=14;
 	for(i=8; i; i--, addr-=inc, pd += est->Draw2Width) {
-		pack=*(u32 *)(vram+addr); // Get 8 pixels
+		pack=CPU_LE2(*(u32 *)(vram+addr)); // Get 8 pixels (BE-portable)
 		if(!pack) continue;
 
 		t=pack&0x000f0000; if (t) pd[0]=(unsigned char)((t>>16)|pal);
@@ -418,7 +418,7 @@ static void DrawSpriteFull(u32 *sprite, struct PicoEState *est)
 	int scrstart = est->Draw2Start;
 	int sx, sy;
 
-	sy=sprite[0];
+	sy=CPU_LE2(sprite[0]);
 	height=sy>>24;
 #if INTERLACE
 	if (est->rendstatus & PDRAW_INTERLACE)
@@ -429,7 +429,7 @@ static void DrawSpriteFull(u32 *sprite, struct PicoEState *est)
 	width=(height>>2)&3; height&=3;
 	width++; height++; // Width and height in tiles
 
-	code=sprite[1];
+	code=CPU_LE2(sprite[1]);
 	sx=((code>>16)&0x1ff)-0x78; // X
 
 	tile=code&0x7ff; // Tile number
@@ -507,7 +507,7 @@ static void DrawAllSpritesFull(int prio, int maxwidth, struct PicoEState *est)
 		sprite=(u32 *)(est->PicoMem_vram+((table+(link<<2))&0x7ffc)); // Find sprite
 
 		// get sprite info
-		code = sprite[0];
+		code = CPU_LE2(sprite[0]);
 
 		// check if it is not hidden vertically
 #if INTERLACE
@@ -520,7 +520,7 @@ static void DrawAllSpritesFull(int prio, int maxwidth, struct PicoEState *est)
 		if(sy+height <= y_min || sy > y_max) goto nextsprite;
 
 		// masking sprite?
-		code2=sprite[1];
+		code2=CPU_LE2(sprite[1]);
 		sx = (code2>>16)&0x1ff;
 		if(!sx) {
 			int to = sy+height; // sy ~ from

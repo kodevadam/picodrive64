@@ -118,6 +118,11 @@
 #include "../pico_int.h"
 #include "ym2612.h"
 
+#ifdef N64
+#include <libdragon.h>
+#include "../../platform/n64/rsp_fm.h"
+#endif
+
 #ifndef EXTERNAL_YM2612
 #include <stdlib.h>
 // let it be 1 global to simplify things
@@ -688,6 +693,39 @@ static INLINE void set_sl_rr(FM_SLOT *SLOT, int v)
 
 
 
+#ifdef N64
+/* N64: Decomposed op_calc avoids 208KB ym_tl_tab (L1 cache killer).
+ * Uses ym_sin_tab[256] (512B) + ym_tl_tab2[256] (512B) = 1KB total.
+ * Both tables stay hot in L1 cache. Replaces one 208KB lookup with
+ * two 512B lookups + a shift. */
+static INLINE signed int op_calc(UINT32 phase, unsigned int env, signed int pm)
+{
+	int sin = (phase>>16) + (pm>>1);
+	int neg = sin & 0x200;
+	if (sin & 0x100) sin ^= 0xff;
+	sin &= 0xff;
+	env &= ~1;
+
+	int p = (env << 2) + ym_sin_tab[sin];
+	if (p >= 13*TL_RES_LEN) return 0;
+	int ret = ym_tl_tab2[p & 0xFF] >> (p >> 8);
+	return neg ? -ret : ret;
+}
+
+static INLINE signed int op_calc1(UINT32 phase, unsigned int env, signed int pm)
+{
+	int sin = (phase+pm)>>16;
+	int neg = sin & 0x200;
+	if (sin & 0x100) sin ^= 0xff;
+	sin &= 0xff;
+	env &= ~1;
+
+	int p = (env << 2) + ym_sin_tab[sin];
+	if (p >= 13*TL_RES_LEN) return 0;
+	int ret = ym_tl_tab2[p & 0xFF] >> (p >> 8);
+	return neg ? -ret : ret;
+}
+#else
 static INLINE signed int op_calc(UINT32 phase, unsigned int env, signed int pm)
 {
 	int ret, sin = (phase>>16) + (pm>>1);
@@ -695,10 +733,6 @@ static INLINE signed int op_calc(UINT32 phase, unsigned int env, signed int pm)
 	if (sin & 0x100) sin ^= 0xff;
 	sin&=0xff;
 	env&=~1;
-
-	// this was already checked
-	// if (env >= ENV_QUIET) // 384
-	//	return 0;
 
 	ret = ym_tl_tab[sin | (env<<7)];
 
@@ -713,13 +747,11 @@ static INLINE signed int op_calc1(UINT32 phase, unsigned int env, signed int pm)
 	sin&=0xff;
 	env&=~1;
 
-	// if (env >= ENV_QUIET) // 384
-	//	return 0;
-
 	ret = ym_tl_tab[sin | (env<<7)];
 
 	return neg ? -ret : ret;
 }
+#endif
 
 #if !defined(_ASM_YM2612_C) || defined(EXTERNAL_YM2612)
 /* advance LFO to next sample */
@@ -1797,6 +1829,136 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	refresh_fc_eg_chan( &ym2612.CH[4] );
 	refresh_fc_eg_chan( &ym2612.CH[5] );
 
+#ifdef N64
+	/* RSP FM synthesis: offload operator math to RSP */
+	if (length > 0 && length <= 256) {
+		extern void rsp_fm_render(struct rsp_fm_state *, int32_t *);
+		static struct rsp_fm_state __attribute__((aligned(16))) rsp_state;
+		static int32_t __attribute__((aligned(16))) rsp_out[256];
+		int c;
+
+		/* Extract channel state for RSP */
+		for (c = 0; c < 6; c++) {
+			struct rsp_fm_chan *rch = &rsp_state.ch[c];
+			FM_CH *fmch = &ym2612.CH[c];
+
+			if (!(ym2612.slot_mask & (0xf << (c*4)))) {
+				rch->enabled = 0;
+				continue;
+			}
+			rch->phase[0] = fmch->SLOT[SLOT1].phase;
+			rch->phase[1] = fmch->SLOT[SLOT2].phase;
+			rch->phase[2] = fmch->SLOT[SLOT3].phase;
+			rch->phase[3] = fmch->SLOT[SLOT4].phase;
+
+			rch->incr[0] = fmch->SLOT[SLOT1].Incr;
+			rch->incr[1] = fmch->SLOT[SLOT2].Incr;
+			rch->incr[2] = fmch->SLOT[SLOT3].Incr;
+			rch->incr[3] = fmch->SLOT[SLOT4].Incr;
+
+			rch->vol_out[0] = fmch->SLOT[SLOT1].vol_out;
+			rch->vol_out[1] = fmch->SLOT[SLOT2].vol_out;
+			rch->vol_out[2] = fmch->SLOT[SLOT3].vol_out;
+			rch->vol_out[3] = fmch->SLOT[SLOT4].vol_out;
+
+			rch->fb_shift = fmch->FB;
+			rch->enabled = 1;
+			rch->op1_out = fmch->op1_out;
+			rch->mem = fmch->mem_value;
+
+			/* Algorithm routing params (replaces DMEM algo_table) */
+			{
+				/* c1_mod, m2_mod, c2_mod, out_flags, mem_src */
+				static const uint8_t algo_lut[8][5] = {
+					{1,1,1, 0x08, 1}, /* 0: M1->C1->mem->M2->C2 */
+					{0,1,1, 0x08, 2}, /* 1: (M1+C1)->mem->M2->C2 */
+					{0,1,2, 0x08, 1}, /* 2: C1->mem,(M1+M2)->C2 */
+					{1,0,3, 0x08, 1}, /* 3: M1->C1->mem,(mem+M2)->C2 */
+					{1,0,1, 0x0A, 0}, /* 4: (M1->C1)+(M2->C2) */
+					{1,1,4, 0x0E, 3}, /* 5: M1->(C1+M2+C2) */
+					{1,0,0, 0x0E, 0}, /* 6: (M1->C1)+M2+C2 */
+					{0,0,0, 0x0F, 0}, /* 7: M1+C1+M2+C2 */
+				};
+				int algo = fmch->ALGO & 7;
+				rch->c1_mod    = algo_lut[algo][0];
+				rch->m2_mod    = algo_lut[algo][1];
+				rch->c2_mod    = algo_lut[algo][2];
+				rch->out_flags = algo_lut[algo][3];
+				rch->mem_src   = algo_lut[algo][4];
+			}
+		}
+		rsp_state.num_samples = length;
+
+		/* Submit RSP FM (non-blocking) */
+		rsp_fm_render(&rsp_state, rsp_out);
+		rspq_syncpoint_t fm_sync = rspq_syncpoint_new();
+
+		/* Advance envelopes + LFO while RSP computes operators.
+		 * These don't depend on RSP output - only CPU-side state. */
+		{
+			UINT32 timer = ym2612.OPN.eg_timer;
+			UINT32 timer_add = ym2612.OPN.eg_timer_add;
+			int i;
+
+			for (i = 0; i < length; i++) {
+				timer += timer_add;
+				while (timer >= (UINT32)(1 << EG_SH)) {
+					int ch;
+					timer -= (1 << EG_SH);
+					for (ch = 0; ch < 6; ch++) {
+						if (!(ym2612.slot_mask & (0xf << (ch*4))))
+							continue;
+						if (ym2612.CH[ch].upd_cnt > 0) {
+							ym2612.CH[ch].upd_cnt--;
+							continue;
+						}
+						ym2612.CH[ch].upd_cnt = 2;
+						ym2612.OPN.eg_cnt++;
+						if (ym2612.OPN.eg_cnt >= 4096)
+							ym2612.OPN.eg_cnt = 1;
+						{
+							int s;
+							UINT32 ssg_en = (ym2612.ssg_mask >> (ch*4)) & 0xf;
+							ssg_en = ssg_en && (ym2612.OPN.ST.flags & ST_SSG);
+							for (s = 0; s < 4; s++) {
+								if (ym2612.CH[ch].SLOT[s].state != EG_OFF)
+									update_eg_phase(&ym2612.CH[ch].SLOT[s],
+										ym2612.OPN.eg_cnt, ssg_en);
+							}
+						}
+					}
+				}
+			}
+			ym2612.OPN.eg_timer = timer;
+		}
+		ym2612.OPN.lfo_cnt += ym2612.OPN.lfo_inc * length;
+
+		/* Wait for RSP FM command specifically (not entire queue) */
+		rspq_syncpoint_wait(fm_sync);
+		data_cache_hit_invalidate(&rsp_state, (sizeof(rsp_state) + 15) & ~15);
+		data_cache_hit_invalidate(rsp_out, (length * sizeof(int32_t) + 15) & ~15);
+
+		/* Copy RSP output to FM buffer */
+		for (c = 0; c < length; c++)
+			buffer[c] += rsp_out[c];
+
+		/* Write back RSP-maintained state */
+		for (c = 0; c < 6; c++) {
+			FM_CH *fmch = &ym2612.CH[c];
+			if (!(ym2612.slot_mask & (0xf << (c*4)))) continue;
+
+			fmch->op1_out = rsp_state.ch[c].op1_out;
+			fmch->mem_value = rsp_state.ch[c].mem;
+
+			fmch->SLOT[SLOT1].phase = rsp_state.ch[c].phase[0];
+			fmch->SLOT[SLOT2].phase = rsp_state.ch[c].phase[1];
+			fmch->SLOT[SLOT3].phase = rsp_state.ch[c].phase[2];
+			fmch->SLOT[SLOT4].phase = rsp_state.ch[c].phase[3];
+		}
+
+		return 1;
+	}
+#else
 	pan = ym2612.OPN.pan;
 
 	/* mix to 32bit dest */
@@ -1820,6 +1982,7 @@ int YM2612UpdateOne_(s32 *buffer, int length, int stereo, int is_buf_empty)
 	chan_render_finish(buffer, length, active_chs);
 
 	return active_chs; // 1 if buffer updated
+#endif
 }
 
 

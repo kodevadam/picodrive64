@@ -39,7 +39,7 @@ check_define()
 # "" means "autodetect".
 
 # TODO this is annoyingly messy. should have platform and device
-platform_list="generic pandora gph dingux retrofw opendingux[-gcw0] odbeta[-gcw0] miyoo rpi1 rpi2 ps2 psp win32"
+platform_list="generic pandora gph dingux retrofw opendingux[-gcw0] odbeta[-gcw0] miyoo rpi1 rpi2 ps2 psp n64 win32"
 platform="generic"
 sound_driver_list="oss alsa sdl"
 sound_drivers=""
@@ -159,6 +159,29 @@ set_platform()
     ASFLAGS="$ASFLAGS -G0 -call_shared"
     CFLAGS="$CFLAGS -D_EE -G0 -I${PS2SDK}/ee/include -I${PS2SDK}/common/include -I${PS2DEV}/gsKit/include -I${PS2SDK}/ports/include"
     LDFLAGS="$LDFLAGS -Wl,-zmax-page-size=128 -T${PS2SDK}/ee/startup/linkfile -L${PS2SDK}/ee/lib -L${PS2DEV}/gsKit/lib -L${PS2SDK}/ports/lib"
+    ;;
+  n64)
+    # Nintendo 64 using libdragon SDK
+    # VR4300 is MIPS III 64-bit, but we use 32-bit ABI
+    SYSLIBS=""
+    CC="${N64_INST:-/opt/libdragon}/bin/mips64-elf-gcc"
+    CXX="${N64_INST:-/opt/libdragon}/bin/mips64-elf-g++"
+    AS="${N64_INST:-/opt/libdragon}/bin/mips64-elf-as"
+    LD="${N64_INST:-/opt/libdragon}/bin/mips64-elf-gcc"
+    STRIP="${N64_INST:-/opt/libdragon}/bin/mips64-elf-strip"
+    MFLAGS="-march=vr4300 -mtune=vr4300"
+    ARCH=mips64
+    CFLAGS="$CFLAGS -DN64 -I${N64_INST:-/opt/libdragon}/mips64-elf/include"
+    LDFLAGS="$LDFLAGS -L${N64_INST:-/opt/libdragon}/mips64-elf/lib -T${N64_INST:-/opt/libdragon}/mips64-elf/lib/n64.ld -ldragon -lc -lm -ldragonsys -Wl,--wrap,__do_global_ctors"
+    # Aggressive optimization for VR4300
+    # -fno-lto: required (libdragon inline symbol issues)
+    # -fomit-frame-pointer: free register for MIPS (saves s8/fp)
+    # -ffast-math: faster FP (not used much but helps where it does)
+    # -finline-limit=300: inline more aggressively for hot interpreter loops
+    # -funroll-loops: unroll small loops (helps 68k opcode dispatch)
+    CFLAGS="$CFLAGS -fno-lto -fomit-frame-pointer -ffast-math -finline-limit=300 -funroll-loops"
+    sound_drivers=""
+    have_libavcodec="no"
     ;;
   win32)
     MFLAGS=""
@@ -292,14 +315,21 @@ case "$platform" in
 rpi1 | rpi2 | generic | opendingux | win32)
   need_sdl="yes"
   ;;
+n64)
+  # N64 uses libdragon, no SDL/libpng/zlib from system
+  need_sdl="no"
+  need_zlib="yes"
+  ;;
 esac
 
-# basic compiler test
+# basic compiler test (skip for N64 cross-compilation)
+if [ "$platform" != "n64" ]; then
 cat > $TMPC <<EOF
 int main (int argc, char *argv[]) { return 0; }
 EOF
 if ! compile_binary; then
   fail "compiler test failed, please check config.log"
+fi
 fi
 
 # header/library presence tests
@@ -377,10 +407,16 @@ test -n "$SDL_CONFIG" || SDL_CONFIG=false
 
 MAIN_LDLIBS="$LDLIBS -lm"
 
-check_zlib -lz && MAIN_LDLIBS="$MAIN_LDLIBS -lz" || need_zlib="yes"
+if [ "$platform" != "n64" ]; then
+  check_zlib -lz && MAIN_LDLIBS="$MAIN_LDLIBS -lz" || need_zlib="yes"
+else
+  need_zlib="yes"
+fi
 
-MAIN_LDLIBS="-lpng $MAIN_LDLIBS"
-check_libpng || fail "please install libpng (libpng-dev)"
+if [ "$platform" != "n64" ]; then
+  MAIN_LDLIBS="-lpng $MAIN_LDLIBS"
+  check_libpng || fail "please install libpng (libpng-dev)"
+fi
 
 case "$have_libavcodec" in
 y|Y|yes)
@@ -398,8 +434,10 @@ esac
 #  MAIN_LDLIBS="-lchdr $MAIN_LDLIBS"
 #fi
 
-# find what audio support we can compile
-if [ "x$sound_drivers" = "x" ]; then
+# find what audio support we can compile (skip for N64 cross-compilation)
+if [ "$platform" = "n64" ]; then
+  sound_drivers=""
+elif [ "x$sound_drivers" = "x" ]; then
   if check_oss; then sound_drivers="$sound_drivers oss"; fi
   if check_alsa -lasound; then
     sound_drivers="$sound_drivers alsa"

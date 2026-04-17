@@ -258,6 +258,47 @@ OBJS += platform/ps2/emu.o
 OBJS += platform/ps2/in_ps2.o
 USE_FRONTEND = 1
 endif
+ifeq "$(PLATFORM)" "n64"
+# Nintendo 64 via libdragon (targets SummerCart64)
+# USE_BGR555 matches PS2 (also big-endian MIPS) - forces 5-5-5 color output
+CFLAGS += -DN64 -DUSE_BGR555
+# Disable features that won't fit in N64 RAM
+no_32x = 1
+no_sms = 0
+use_libchdr = 0
+use_fame = 1
+use_cz80 = 1
+use_sh2drc = 0
+use_svpdrc = 0
+DRC_68K = 1
+# RSP palette converter (unused - RDP blit replaced it)
+#OBJS += platform/n64/rsp_tiles.o platform/n64/rsp_render.o
+# RSP audio overlay + FM synthesis overlay
+OBJS += platform/n64/rsp_audio_ovl.o platform/n64/rsp_audio.o
+OBJS += platform/n64/rsp_fm_ovl.o platform/n64/rsp_fm.o
+# RSP overlay C wrappers must not use LTO - the DEFINE_RSP_UCODE symbols
+# get garbage-collected when LTO can't see the overlay binary references
+# RSP overlay C wrappers and main must not use LTO - DEFINE_RSP_UCODE
+# symbols get garbage-collected when LTO can't trace overlay binary refs
+platform/n64/rsp_fm.o: CFLAGS += -fno-lto
+platform/n64/rsp_audio.o: CFLAGS += -fno-lto
+platform/n64/main_n64.o: CFLAGS += -fno-lto
+ifeq "$(N64_EMBEDDED_ROM)" "1"
+# Standalone mode: single file has main + all platform stubs
+OBJS += platform/n64/main_n64.o
+N64_STANDALONE = 1
+else
+# Full frontend mode
+OBJS += platform/n64/plat.o
+OBJS += platform/n64/emu.o
+OBJS += platform/n64/in_n64.o
+OBJS += platform/n64/menu_n64.o
+OBJS += platform/n64/readpng_n64.o
+OBJS += platform/n64/sndout_n64.o
+USE_FRONTEND = 1
+endif
+N64_BUILD = 1
+endif
 ifeq "$(PLATFORM)" "win32"
 CFLAGS += -DSDL_OVERLAY_2X -DSDL_BUFFER_3X -DSDL_REDRAW_EVT
 OBJS += platform/win32/plat.o
@@ -297,18 +338,26 @@ endif
 ifeq "$(USE_FRONTEND)" "1"
 
 # common
-OBJS += platform/common/main.o platform/common/emu.o platform/common/upscale.o \
+ifneq "$(N64_STANDALONE)" "1"
+OBJS += platform/common/main.o
+endif
+OBJS += platform/common/emu.o platform/common/upscale.o \
 	platform/common/menu_pico.o platform/common/keyboard.o platform/common/config_file.o
 
 # libpicofe
-OBJS += platform/libpicofe/input.o platform/libpicofe/readpng.o \
+ifneq "$(N64_BUILD)" "1"
+OBJS += platform/libpicofe/readpng.o
+endif
+OBJS += platform/libpicofe/input.o \
 	platform/libpicofe/fonts.o
 ifneq (,$(filter %HAVE_GLES, $(CFLAGS)))
 OBJS += platform/libpicofe/gl.o platform/libpicofe/gl_platform.o
 endif
 
 # libpicofe - sound
+ifneq "$(N64_BUILD)" "1"
 OBJS += platform/libpicofe/sndout.o
+endif
 ifneq ($(findstring oss,$(SOUND_DRIVERS)),)
 platform/libpicofe/sndout.o: CFLAGS += -DHAVE_OSS
 OBJS += platform/libpicofe/linux/sndout_oss.o
@@ -329,6 +378,7 @@ endif
 endif # USE_FRONTEND
 
 ifneq "$(PLATFORM)" "psp"
+ifneq "$(N64_BUILD)" "1"
 OBJS += platform/common/mp3.o platform/common/mp3_sync.o
 ifeq "$(PLATFORM_MP3)" "1"
 OBJS += platform/common/mp3_helix.o
@@ -338,6 +388,7 @@ else
 #OBJS += platform/common/mp3_minimp3.o
 OBJS += platform/common/mp3_drmp3.o
 endif
+endif # N64_BUILD
 endif
 
 ifeq (1,$(use_libchdr))
@@ -422,6 +473,14 @@ else
 	$(LD) $(LINKOUT)$@ $^ $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 endif
 
+# N64: use platform/n64/Makefile for ROM packaging
+ifeq "$(PLATFORM)" "n64"
+PicoDrive64.z64: $(TARGET)
+	N64_INST=/opt/libdragon $(MAKE) -C platform/n64 rom
+	cp platform/n64/PicoDrive64.z64 $@
+all: PicoDrive64.z64
+endif
+
 ifeq "$(PLATFORM)" "psp"
 PSPSDK ?= $(shell psp-config --pspsdk-path)
 TARGET = PicoDrive
@@ -441,6 +500,38 @@ pico/pico_int_offs.h: tools/mkoffsets.sh
 
 %.o: %.c
 	$(CC) -c $(OBJOUT)$@ $< $(CFLAGS)
+
+# RSP overlay build rule: compile .S -> extract text/data -> linkable .o
+# Uses DEFINE_RSP_UCODE symbol naming: rsp_BASENAME_{text,data}_{start,end,size}
+ifeq "$(PLATFORM)" "n64"
+N64_INST ?= /opt/libdragon
+platform/n64/rsp_%_ovl.o: platform/n64/rsp_%.S
+	@echo "    [RSP-OVL] $<"
+	@BASENAME=$$(basename $< .S); \
+	BINARY="$(basename $@).elf"; \
+	TEXTSYM=$$(echo "$(basename $@)_text" | tr '/.+-' '____'); \
+	DATASYM=$$(echo "$(basename $@)_data" | tr '/.+-' '____'); \
+	$(CC) -march=mips1 -mabi=32 -Wa,--fatal-warnings \
+		-I$(N64_INST)/mips64-elf/include \
+		-nostartfiles -Wl,-T$(N64_INST)/mips64-elf/lib/rsp.ld \
+		-Wl,--gc-sections -o $$BINARY $<; \
+	$(N64_INST)/bin/mips64-elf-objcopy -O binary -j .text $$BINARY $(basename $@).text.bin; \
+	$(N64_INST)/bin/mips64-elf-objcopy -O binary -j .data $$BINARY $(basename $@).data.bin; \
+	$(N64_INST)/bin/mips64-elf-objcopy -I binary -O elf32-bigmips -B mips4300 \
+		--redefine-sym _binary_$${TEXTSYM}_bin_start=$${BASENAME}_text_start \
+		--redefine-sym _binary_$${TEXTSYM}_bin_end=$${BASENAME}_text_end \
+		--redefine-sym _binary_$${TEXTSYM}_bin_size=$${BASENAME}_text_size \
+		--set-section-alignment .data=8 \
+		--rename-section .text=.data $(basename $@).text.bin $(basename $@).text.o; \
+	$(N64_INST)/bin/mips64-elf-objcopy -I binary -O elf32-bigmips -B mips4300 \
+		--redefine-sym _binary_$${DATASYM}_bin_start=$${BASENAME}_data_start \
+		--redefine-sym _binary_$${DATASYM}_bin_end=$${BASENAME}_data_end \
+		--redefine-sym _binary_$${DATASYM}_bin_size=$${BASENAME}_data_size \
+		--set-section-alignment .data=8 \
+		--rename-section .text=.data $(basename $@).data.bin $(basename $@).data.o; \
+	$(N64_INST)/bin/mips64-elf-ld -relocatable $(basename $@).text.o $(basename $@).data.o -o $@; \
+	rm -f $$BINARY $(basename $@).text.bin $(basename $@).data.bin $(basename $@).text.o $(basename $@).data.o
+endif
 
 .s.o:
 	$(CC) $(CFLAGS) -c $< -o $@
