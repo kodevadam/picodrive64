@@ -271,6 +271,17 @@ CFLAGS += -DN64 -DUSE_BGR555
 # LIBPICOFE_POSIX_H first, which makes the submodule header a no-op.
 # Lets the tree build against a plain stock libpicofe submodule.
 CFLAGS += -include $(CURDIR)/platform/n64/posix_compat.h
+# Newer libdragon (e.g. pyrite64-bin) adds rsp_ucode_t.meta fields to
+# DEFINE_RSP_UCODE, producing undefined references to symbols our
+# overlay build rule doesn't generate.  Stub them out -- we don't use
+# the meta data at runtime.
+LDFLAGS += -Wl,--defsym=rsp_audio_meta_start=0,--defsym=rsp_audio_meta_end=0
+LDFLAGS += -Wl,--defsym=rsp_fm_meta_start=0,--defsym=rsp_fm_meta_end=0
+# Same newer libdragon versions moved __retarget_lock_* hooks into
+# newlib libc.a while libdragonsys.a still defines them, so they
+# collide at link.  Allow the duplicates; they're functionally
+# identical implementations of the newlib retarget interface.
+LDFLAGS += -Wl,-z,muldefs
 # Disable features that won't fit in N64 RAM
 no_32x = 1
 no_sms = 0
