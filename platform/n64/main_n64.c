@@ -33,6 +33,12 @@ unsigned int __attribute__((used)) prof_vdp_layer_ticks = 0;
 unsigned int __attribute__((used)) prof_vdp_sprite_ticks = 0;
 unsigned int __attribute__((used)) prof_vdp_final_ticks = 0;
 
+/* DAC activity counter: incremented on every write to YM2612 reg 0x2a.
+ * We use it to decide whether to skip Z80 on skip frames — games often
+ * leave dacen=1 permanently even when no voice is playing, so dacen
+ * alone isn't a reliable signal.  Actual 0x2a writes are. */
+unsigned int __attribute__((used)) ym_dac_writes = 0;
+
 
 /* Globals expected by PicoDrive core */
 char **g_argv;
@@ -260,15 +266,26 @@ int main(int argc, char *argv[])
 		prof_vdp_layer_ticks = prof_vdp_sprite_ticks = prof_vdp_final_ticks = 0;
 		unsigned int t0 = timer_ticks();
 
-		/* Skip Z80 on skip frames to save ~10 FPS -- but only when DAC
-		 * mode is off.  FM music tolerates the Z80 gap (envelopes
-		 * self-sustain), while DAC voice (ch 6, reg 0x2A bytestream)
-		 * does not: skipping Z80 during DAC = missing PCM writes =
-		 * voice stretched 2x.  dacen is the register-0x2B mode bit;
-		 * games clear it when voice is not active, so most gameplay
-		 * still gets the FPS win. */
+		/* Skip Z80 on skip frames to save ~10 FPS -- but only when no
+		 * DAC voice is actively playing.  Many sound drivers keep
+		 * dacen=1 permanently once any voice has played, so dacen is
+		 * not a reliable signal.  Instead track actual 0x2a writes:
+		 * if the game wrote DAC samples in the last few frames, voice
+		 * is live and Z80 must run every frame.  sticky_dac decays to
+		 * 0 a few frames after writes stop, at which point Z80 can
+		 * skip again.  (Missing the very first frame of a new voice
+		 * burst is inaudible — one frame @60fps is 16 ms.) */
+		static unsigned int prev_dac_writes = 0;
+		static unsigned int sticky_dac = 0;
+		if (ym_dac_writes != prev_dac_writes) {
+			sticky_dac = 4;        /* keep Z80 live for 4 more frames */
+			prev_dac_writes = ym_dac_writes;
+		} else if (sticky_dac) {
+			sticky_dac--;
+		}
+
 		unsigned int saved_opt = PicoIn.opt;
-		if (PicoIn.skipFrame && !ym2612.dacen)
+		if (PicoIn.skipFrame && sticky_dac == 0)
 			PicoIn.opt &= ~POPT_EN_Z80;
 		PicoFrame();
 		PicoIn.opt = saved_opt;

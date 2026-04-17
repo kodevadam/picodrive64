@@ -1366,6 +1366,10 @@ static int ym2612_write_local(u32 a, u32 d, int is_from_z80)
         }
         case 0x2a: { /* DAC data */
           //elprintf(EL_STATUS, "%03i dac w %08x z80 %i", cycles, d, is_from_z80);
+#ifdef N64
+          extern unsigned int ym_dac_writes;
+          ym_dac_writes++;
+#endif
           if (ym2612.dacen)
             PsndDoDAC(cycles);
           ym2612.dacout = ((int)d - 0x80) << DAC_SHIFT;
