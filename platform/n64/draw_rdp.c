@@ -101,23 +101,21 @@ void rdp_tile_draw_demo(unsigned tile_vram_byte_addr, int x, int y,
 	rdpq_texture_rectangle(TILE0, x + 4, y, x + 12, y + 8, 0, 0);
 }
 
-/* Draw one Genesis scroll plane (A or B) by iterating its visible
- * nametable slice and issuing one rdpq upload+rect per tile.  Caller
- * sets up rdpq state (attach, combiner, filter, TLUT, alpha compare)
- * and TLUT in TMEM.
+/* Draw one Genesis scroll plane (A or B) at one priority level.
+ * Caller sets up rdpq state and TLUT.  Nametable-entry bit 15 is the
+ * priority flag (0 = low-priority, 1 = high-priority); we skip tiles
+ * whose priority != `want_prio` so the caller can render the four
+ * passes in the correct Genesis compositing order:
  *
- * plane: 0 = Plane A, 1 = Plane B.  nametab base:
- *   plane A: (reg[2] & 0x38) << 9
- *   plane B: (reg[4] & 0x07) << 12
+ *     B low -> A low -> sprites low -> B high -> A high -> sprites high
  *
- * Scroll: whole-screen mode only (reg[11] & 3 == 0).  Under that
- * mode hscroll is a single u16 at (reg[13]<<9)+plane in VRAM; vscroll
- * is PicoMem.vsram[plane].  Other scroll modes (2-cell, per-scanline)
- * fall back to zero scroll for now -- handled as a later refinement.
+ * Scroll: whole-screen mode only (reg[11] & 3 == 0).  Other scroll
+ * modes fall back to zero scroll for now.
  *
- * Deferred: tile H/V flip, priority, window.
+ * Deferred: tile H/V flip, window plane, sprites.
  */
-static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
+static void draw_plane_rdp(int plane, int want_prio,
+                           int cols, int x_off, int y_off)
 {
 	struct PicoVideo *pv = &Pico.video;
 	static const uint8_t plane_shift[4] = {5, 6, 5, 7};
@@ -178,6 +176,10 @@ static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
 			int tx = (first_col + col) & x_mask;
 			uint16_t entry = PicoMem.vram[nt_row + tx];
 
+			int prio = (entry >> 15) & 1;
+			if (prio != want_prio)
+				continue;
+
 			int tile_idx = entry & 0x7FF;
 			int palette  = (entry >> 13) & 0x03;
 			int key      = (palette << 11) | tile_idx;
@@ -223,19 +225,16 @@ void PicoFrameFullRDP(void)
 	data_cache_hit_writeback(tlut, sizeof(tlut));
 
 	rdpq_set_mode_standard();
-	/* Transparency: color index 0 of each palette bank (TLUT entries
-	 * 0/16/32/48) carries alpha=0; all other entries alpha=1.  Two
-	 * complementary mechanisms so SOMETHING rejects those pixels
-	 * regardless of RDP alpha bit-expansion quirks:
-	 *
-	 *   (a) rdpq_mode_alphacompare(255): any alpha < 255 discarded.
-	 *       If the 1-bit TLUT alpha expands to 0 or 255, alpha=0
-	 *       entries are dropped; alpha=1 entries pass.
-	 *   (b) RDPQ_BLENDER_MULTIPLY: src_rgb*src_a + dst_rgb*(1-src_a).
-	 *       If alpha compare is somehow not doing the work, the
-	 *       blender additionally fades alpha-0 pixels toward the
-	 *       existing framebuffer contents, approximating
-	 *       transparency.  Either way plane B stays visible. */
+	/* Genesis-style transparency over the backdrop/plane-B we
+	 * already drew.  rdpq_set_mode_standard leaves the blender
+	 * disabled and the framebuffer-read disabled -- so our
+	 * MULTIPLY-style blender had no MEMORY_RGB to work with.
+	 * rdpq_mode_antialias enables coverage/read-back and is the
+	 * officially supported way to get proper alpha blending to
+	 * work (see comment in rdpq_mode_antialias docs).  With it on,
+	 * TLUT alpha=0 (color index 0 of each palette bank) blends to
+	 * zero opacity -> framebuffer contents preserved. */
+	rdpq_mode_antialias(AA_STANDARD);
 	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
 	rdpq_mode_alphacompare(255);
 	rdpq_mode_filter(FILTER_POINT);
@@ -248,8 +247,16 @@ void PicoFrameFullRDP(void)
 	int x_off = h40 ? 0 : 32;
 	int y_off = (240 - 224) / 2;
 
-	draw_plane_rdp(1, cols, x_off, y_off);  /* Plane B, back */
-	draw_plane_rdp(0, cols, x_off, y_off);  /* Plane A, front */
+	/* Genesis compositing order: backdrop < B-lo < A-lo < (sprites-lo)
+	 * < B-hi < A-hi < (sprites-hi).  Sprites not yet implemented. */
+	draw_plane_rdp(1, 0, cols, x_off, y_off);  /* Plane B low */
+#ifndef N64_RDP_DEBUG_DISABLE_PLANE_A
+	draw_plane_rdp(0, 0, cols, x_off, y_off);  /* Plane A low */
+#endif
+	draw_plane_rdp(1, 1, cols, x_off, y_off);  /* Plane B high */
+#ifndef N64_RDP_DEBUG_DISABLE_PLANE_A
+	draw_plane_rdp(0, 1, cols, x_off, y_off);  /* Plane A high */
+#endif
 }
 
 #endif /* N64 */
