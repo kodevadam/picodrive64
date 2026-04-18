@@ -101,17 +101,21 @@ void rdp_tile_draw_demo(unsigned tile_vram_byte_addr, int x, int y,
 	rdpq_texture_rectangle(TILE0, x + 4, y, x + 12, y + 8, 0, 0);
 }
 
-/* Draw one Genesis scroll plane (A or B) by iterating its 40x28
- * visible nametable slice and issuing one rdpq upload+rect per tile.
- * Caller is responsible for rdpq_attach + set_mode_standard + filter
- * + tlut mode + TLUT upload + alpha compare being already set up.
+/* Draw one Genesis scroll plane (A or B) by iterating its visible
+ * nametable slice and issuing one rdpq upload+rect per tile.  Caller
+ * sets up rdpq state (attach, combiner, filter, TLUT, alpha compare)
+ * and TLUT in TMEM.
  *
  * plane: 0 = Plane A, 1 = Plane B.  nametab base:
  *   plane A: (reg[2] & 0x38) << 9
  *   plane B: (reg[4] & 0x07) << 12
  *
- * Deferred: scroll, flip, priority, window.  Priority tiles are drawn
- * normally here (will move to a later pass when we add sprites).
+ * Scroll: whole-screen mode only (reg[11] & 3 == 0).  Under that
+ * mode hscroll is a single u16 at (reg[13]<<9)+plane in VRAM; vscroll
+ * is PicoMem.vsram[plane].  Other scroll modes (2-cell, per-scanline)
+ * fall back to zero scroll for now -- handled as a later refinement.
+ *
+ * Deferred: tile H/V flip, priority, window.
  */
 static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
 {
@@ -133,11 +137,37 @@ static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
 		else if (width > 1) plane_h_mask  = 0x1f;
 	}
 
-	for (int row = 0; row < 28; row++) {
-		int ty = row & plane_h_mask;
+	/* Scroll: positive hscroll slides plane to the right on screen,
+	 * so the tile at plane column (-hscroll)/8 ends up at screen
+	 * column 0.  Positive vscroll slides plane upward, so the tile
+	 * at plane row (vscroll)/8 is the first visible row. */
+	int hscroll = 0, vscroll = 0;
+	if ((pv->reg[11] & 3) == 0) {
+		int htab = (pv->reg[13] << 9) + plane;
+		hscroll = PicoMem.vram[htab & 0x7fff];
+	}
+	vscroll = PicoMem.vsram[plane] & 0x3ff;
+
+	/* Signed arithmetic: hscroll as read is effectively negated
+	 * (Genesis "shift contents right" vs. our "first visible tile
+	 * is at negative plane-x"). */
+	int xbase     = -hscroll;
+	int xsub      = xbase & 7;
+	int first_col = (xbase >> 3);
+	int n_cols    = cols + (xsub ? 1 : 0);
+
+	int ybase     = vscroll;
+	int ysub      = ybase & 7;
+	int first_row = (ybase >> 3);
+	int n_rows    = 28 + (ysub ? 1 : 0);
+
+	for (int row = 0; row < n_rows; row++) {
+		int ty = (first_row + row) & plane_h_mask;
 		int nt_row = nametab + (ty << plane_w_bits);
-		for (int col = 0; col < cols; col++) {
-			int tx = col & x_mask;
+		int sy = y_off + row * 8 - ysub;
+
+		for (int col = 0; col < n_cols; col++) {
+			int tx = (first_col + col) & x_mask;
 			uint16_t entry = PicoMem.vram[nt_row + tx];
 
 			int tile_idx = entry & 0x7FF;
@@ -151,8 +181,7 @@ static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
 			rdpq_texparms_t p = { .palette = palette };
 			rdpq_tex_upload(TILE0, &tile_surf, &p);
 
-			int sx = x_off + col * 8;
-			int sy = y_off + row * 8;
+			int sx = x_off + col * 8 - xsub;
 			rdpq_texture_rectangle(TILE0, sx, sy, sx + 8, sy + 8, 0, 0);
 		}
 	}
@@ -182,6 +211,11 @@ void PicoFrameFullRDP(void)
 	data_cache_hit_writeback(tlut, sizeof(tlut));
 
 	rdpq_set_mode_standard();
+	/* Explicit combiner so the texture alpha (from TLUT) reaches
+	 * the alpha-compare stage -- rdpq_set_mode_standard doesn't
+	 * guarantee which combiner is active and the default in some
+	 * versions doesn't route TEX0 alpha. */
+	rdpq_mode_combiner(RDPQ_COMBINER_TEX);
 	rdpq_mode_filter(FILTER_POINT);
 	rdpq_mode_tlut(TLUT_RGBA16);
 	rdpq_mode_alphacompare(1);        /* reject TLUT alpha=0 pixels */
