@@ -166,20 +166,32 @@ static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
 		int nt_row = nametab + (ty << plane_w_bits);
 		int sy = y_off + row * 8 - ysub;
 
+		/* Skip re-uploading the same tile+palette as the previous
+		 * rect; TMEM still holds it, the tile descriptor still
+		 * points at it.  Gigantic win on scenes where adjacent
+		 * nametable entries reference the same tile (menus,
+		 * empty areas, repeating backgrounds) -- which is most
+		 * scenes.  Reset across rows to keep the logic simple. */
+		int last_key = -1;
+
 		for (int col = 0; col < n_cols; col++) {
 			int tx = (first_col + col) & x_mask;
 			uint16_t entry = PicoMem.vram[nt_row + tx];
 
 			int tile_idx = entry & 0x7FF;
 			int palette  = (entry >> 13) & 0x03;
+			int key      = (palette << 11) | tile_idx;
 
-			const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
-			                        + (tile_idx << 5);
-			surface_t tile_surf = surface_make((void *)tile_src,
-			                                   FMT_CI4, 8, 8, 4);
+			if (key != last_key) {
+				const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
+				                        + (tile_idx << 5);
+				surface_t tile_surf = surface_make((void *)tile_src,
+				                                   FMT_CI4, 8, 8, 4);
 
-			rdpq_texparms_t p = { .palette = palette };
-			rdpq_tex_upload(TILE0, &tile_surf, &p);
+				rdpq_texparms_t p = { .palette = palette };
+				rdpq_tex_upload(TILE0, &tile_surf, &p);
+				last_key = key;
+			}
 
 			int sx = x_off + col * 8 - xsub;
 			rdpq_texture_rectangle(TILE0, sx, sy, sx + 8, sy + 8, 0, 0);
