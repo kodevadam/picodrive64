@@ -223,14 +223,23 @@ void PicoFrameFullRDP(void)
 	data_cache_hit_writeback(tlut, sizeof(tlut));
 
 	rdpq_set_mode_standard();
-	/* Explicit combiner so the texture alpha (from TLUT) reaches
-	 * the alpha-compare stage -- rdpq_set_mode_standard doesn't
-	 * guarantee which combiner is active and the default in some
-	 * versions doesn't route TEX0 alpha. */
-	rdpq_mode_combiner(RDPQ_COMBINER_TEX);
+	/* Transparency: color index 0 of each palette bank (TLUT entries
+	 * 0/16/32/48) carries alpha=0; all other entries alpha=1.  Two
+	 * complementary mechanisms so SOMETHING rejects those pixels
+	 * regardless of RDP alpha bit-expansion quirks:
+	 *
+	 *   (a) rdpq_mode_alphacompare(255): any alpha < 255 discarded.
+	 *       If the 1-bit TLUT alpha expands to 0 or 255, alpha=0
+	 *       entries are dropped; alpha=1 entries pass.
+	 *   (b) RDPQ_BLENDER_MULTIPLY: src_rgb*src_a + dst_rgb*(1-src_a).
+	 *       If alpha compare is somehow not doing the work, the
+	 *       blender additionally fades alpha-0 pixels toward the
+	 *       existing framebuffer contents, approximating
+	 *       transparency.  Either way plane B stays visible. */
+	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
+	rdpq_mode_alphacompare(255);
 	rdpq_mode_filter(FILTER_POINT);
 	rdpq_mode_tlut(TLUT_RGBA16);
-	rdpq_mode_alphacompare(1);        /* reject TLUT alpha=0 pixels */
 	rdpq_tex_upload_tlut(tlut, 0, 64);
 
 	/* ---- Draw both planes (B first so A overlays) ---- */
