@@ -227,19 +227,34 @@ static void draw_plane_rdp(int plane, int want_prio,
 		 * treats the buffer as a (n_atlas*8) x 8 image with stride
 		 * ATLAS_STRIDE, so tile slot S's pixel (c,r) lives at
 		 * row_atlas[r*ATLAS_STRIDE + S*8 + c].  Using a tile-major
-		 * layout would make every slot>0 sample garbage. */
+		 * layout would make every slot>0 sample garbage.
+		 *
+		 * Buffer-reuse race: rdpq_tex_upload only QUEUES the DRAM
+		 * address; the RDP reads it asynchronously later.  If we
+		 * reuse one static buffer every row, we overwrite it before
+		 * the RDP has uploaded the previous row's tiles -- which
+		 * produced the "letters swapped between tiles" corruption.
+		 * Fix: ring through NUM_ATLASES buffers so by the time we
+		 * wrap, the RDP is long done with a given buffer. */
 		enum { MAX_SLOTS = 32 };
-		enum { ATLAS_STRIDE = MAX_SLOTS * 8 };     /* 256 B/row */
-		static uint8_t  row_atlas[8 * ATLAS_STRIDE] __attribute__((aligned(8)));
+		enum { ATLAS_STRIDE = MAX_SLOTS * 8 };      /* 256 B/row */
+		enum { ATLAS_BYTES  = 8 * ATLAS_STRIDE };   /* 2 KB / atlas */
+		enum { NUM_ATLASES  = 8 };                  /* ring size */
+		static uint8_t  atlas_pool[NUM_ATLASES][ATLAS_BYTES] __attribute__((aligned(8)));
+		static int      atlas_ring_idx = 0;
 		static uint16_t row_keys [MAX_SLOTS];
 		static int8_t   col_slot [48];
+		uint8_t *row_atlas = atlas_pool[atlas_ring_idx];
+		atlas_ring_idx = (atlas_ring_idx + 1) & (NUM_ATLASES - 1);
 		int n_atlas = 0;
 
 		/* Inline-callable flush: upload current atlas, draw rects
-		 * for every col that has a non-negative slot, then reset. */
+		 * for every col that has a non-negative slot, then rotate
+		 * to the next ring buffer (if there could be more slots
+		 * this row) so the next batch doesn't race the upload. */
 		#define FLUSH_ATLAS() do { \
 			if (n_atlas > 0) { \
-				data_cache_hit_writeback(row_atlas, 8 * ATLAS_STRIDE); \
+				data_cache_hit_writeback(row_atlas, ATLAS_BYTES); \
 				surface_t atlas_surf = surface_make(row_atlas, \
 				                                    FMT_CI8, \
 				                                    n_atlas * 8, 8, \
@@ -254,6 +269,8 @@ static void draw_plane_rdp(int plane, int want_prio,
 					col_slot[cc] = -1; /* drawn; don't redraw on next flush */ \
 				} \
 				n_atlas = 0; \
+				row_atlas = atlas_pool[atlas_ring_idx]; \
+				atlas_ring_idx = (atlas_ring_idx + 1) & (NUM_ATLASES - 1); \
 			} \
 		} while(0)
 
@@ -426,18 +443,15 @@ void PicoFrameFullRDP(void)
 	data_cache_hit_writeback(tlut, sizeof(tlut));
 
 	rdpq_set_mode_standard();
-	/* Genesis-style transparency over the backdrop/plane-B we
-	 * already drew.  rdpq_set_mode_standard leaves the blender
-	 * disabled and the framebuffer-read disabled -- so our
-	 * MULTIPLY-style blender had no MEMORY_RGB to work with.
-	 * rdpq_mode_antialias enables coverage/read-back and is the
-	 * officially supported way to get proper alpha blending to
-	 * work (see comment in rdpq_mode_antialias docs).  With it on,
-	 * TLUT alpha=0 (color index 0 of each palette bank) blends to
-	 * zero opacity -> framebuffer contents preserved. */
-	rdpq_mode_antialias(AA_STANDARD);
-	rdpq_mode_blender(RDPQ_BLENDER_MULTIPLY);
-	rdpq_mode_alphacompare(255);
+	/* Genesis transparency is 1-bit per pixel (color-0 of each
+	 * palette bank).  That doesn't need a blender -- a write-or-
+	 * skip decision via alpha-compare is enough.  Going through
+	 * the blender + AA_STANDARD path forces RDP into 2-cycle mode
+	 * with framebuffer reads, dropping fill rate by ~10x.  Our
+	 * TLUT encodes color-0 with alpha=0 (0x00 when expanded to
+	 * 8-bit) and every other color with alpha=1 (0xFF); threshold
+	 * 128 cleanly splits them while leaving us in 1-cycle mode. */
+	rdpq_mode_alphacompare(128);
 	rdpq_mode_filter(FILTER_POINT);
 	rdpq_mode_tlut(TLUT_RGBA16);
 	rdpq_tex_upload_tlut(tlut, 0, 64);
