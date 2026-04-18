@@ -201,6 +201,86 @@ static void draw_plane_rdp(int plane, int want_prio,
 	}
 }
 
+/* Draw one pass of the Genesis sprite list.  want_prio selects the
+ * priority bucket (0 = low, 1 = high) so we can interleave sprites
+ * with the plane passes in the correct Genesis compositing order.
+ *
+ * Sprite attribute table at (reg[5] & 0x7f) << 8 (u16 index).  Each
+ * entry is 4 u16 words:
+ *   [0]           Y  : (val & 0x1ff) - 0x80
+ *   [1] size+link  :  bits 15..8 = size (V bits 1..0, H bits 3..2
+ *                                        of that byte, count - 1),
+ *                     bits 6..0 = next-sprite link
+ *   [2]        code  :  b15 prio, b14..13 pal, b12 vflip, b11 hflip,
+ *                       b10..0 tile index
+ *   [3]           X  : (val & 0x1ff) - 0x80
+ *
+ * Within a sprite, tiles are stored column-major: tile index
+ * increases going DOWN first, then RIGHT.  H/V flip is applied via
+ * mirrored iteration order.  Offscreen cull is coarse (bbox vs
+ * 320x224 visible rect).  Masking sprites (X=0 sentinels) and MD
+ * 80/64 hardware limits are honored via the linked-list walk.
+ */
+static void draw_sprites_rdp(int want_prio, int y_off)
+{
+	struct PicoVideo *pv = &Pico.video;
+	int h40         = (pv->reg[12] & 0x01);
+	int max_sprites = h40 ? 80 : 64;
+	int table       = pv->reg[5] & 0x7f;
+	if (h40) table &= 0x7e;
+	table <<= 8;
+
+	int link = 0;
+	for (int u = 0; u < max_sprites; u++) {
+		const uint16_t *attr = &PicoMem.vram[(table + link*4) & 0x7ffc];
+		uint16_t w0 = attr[0], w1 = attr[1];
+		uint16_t w2 = attr[2], w3 = attr[3];
+
+		int sy    = ((int)(w0 & 0x1ff)) - 0x80;
+		int size  = (w1 >> 8) & 0xff;
+		int w_t   = ((size >> 2) & 3) + 1;
+		int h_t   = (size & 3) + 1;
+		int sx    = ((int)(w3 & 0x1ff)) - 0x80;
+		int tile0 = w2 & 0x7ff;
+		int pal   = (w2 >> 13) & 3;
+		int hflip = (w2 >> 11) & 1;
+		int vflip = (w2 >> 12) & 1;
+		int prio  = (w2 >> 15) & 1;
+		int next  = w1 & 0x7f;
+
+		if (prio != want_prio) goto next;
+
+		int sw = w_t * 8, sh = h_t * 8;
+		if (sx + sw <= 0 || sx >= 320) goto next;
+		if (sy + sh <= 0 || sy >= 224) goto next;
+
+		for (int tc = 0; tc < w_t; tc++) {
+			int scol = hflip ? (w_t - 1 - tc) : tc;
+			for (int tr = 0; tr < h_t; tr++) {
+				int srow = vflip ? (h_t - 1 - tr) : tr;
+				int tile_idx = (tile0 + scol * h_t + srow) & 0x7ff;
+
+				const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
+				                        + (tile_idx << 5);
+				surface_t tile_surf = surface_make((void *)tile_src,
+				                                   FMT_CI4, 8, 8, 4);
+
+				rdpq_texparms_t p = { .palette = pal };
+				rdpq_tex_upload(TILE0, &tile_surf, &p);
+
+				int psx = sx + tc * 8;
+				int psy = y_off + sy + tr * 8;
+				rdpq_texture_rectangle(TILE0,
+				                       psx, psy, psx + 8, psy + 8, 0, 0);
+			}
+		}
+
+	next:
+		if (next == 0) break;
+		link = next;
+	}
+}
+
 void PicoFrameFullRDP(void)
 {
 	/* Step 3c: Plane B + Plane A with transparency.  Flip, scroll,
@@ -247,15 +327,21 @@ void PicoFrameFullRDP(void)
 	int x_off = h40 ? 0 : 32;
 	int y_off = (240 - 224) / 2;
 
-	/* Genesis compositing order: backdrop < B-lo < A-lo < (sprites-lo)
-	 * < B-hi < A-hi < (sprites-hi).  Sprites not yet implemented. */
-	draw_plane_rdp(1, 0, cols, x_off, y_off);  /* Plane B low */
+	/* Genesis compositing order:
+	 *   backdrop < B-lo < A-lo < sprites-lo < B-hi < A-hi < sprites-hi */
+	draw_plane_rdp  (1, 0, cols, x_off, y_off);  /* Plane B low  */
 #ifndef N64_RDP_DEBUG_DISABLE_PLANE_A
-	draw_plane_rdp(0, 0, cols, x_off, y_off);  /* Plane A low */
+	draw_plane_rdp  (0, 0, cols, x_off, y_off);  /* Plane A low  */
 #endif
-	draw_plane_rdp(1, 1, cols, x_off, y_off);  /* Plane B high */
+#ifndef N64_RDP_DEBUG_DISABLE_SPRITES
+	draw_sprites_rdp(   0,              y_off);  /* sprites low  */
+#endif
+	draw_plane_rdp  (1, 1, cols, x_off, y_off);  /* Plane B high */
 #ifndef N64_RDP_DEBUG_DISABLE_PLANE_A
-	draw_plane_rdp(0, 1, cols, x_off, y_off);  /* Plane A high */
+	draw_plane_rdp  (0, 1, cols, x_off, y_off);  /* Plane A high */
+#endif
+#ifndef N64_RDP_DEBUG_DISABLE_SPRITES
+	draw_sprites_rdp(   1,              y_off);  /* sprites high */
 #endif
 }
 
