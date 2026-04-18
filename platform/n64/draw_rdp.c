@@ -43,7 +43,11 @@
 /* Defined in draw2.c — the existing proven CPU renderer. */
 extern void PicoFrameFull(void);
 
-/* Build a 64-entry RGBA5551 TLUT from Genesis CRAM (HighPal[0..63]). */
+/* Build a 64-entry RGBA5551 TLUT from Genesis CRAM (HighPal[0..63]).
+ * Color index 0 of each of the 4 palette banks (entries 0, 16, 32, 48)
+ * is Genesis-transparent: on layer B it means "show backdrop"; on
+ * layer A it means "show layer B below".  We encode that as alpha=0
+ * here so rdpq_mode_alphacompare can reject those pixels during draw. */
 void rdp_tiles_build_tlut(uint16_t *tlut_out)
 {
 	const unsigned short *src = Pico.est.HighPal;
@@ -52,7 +56,8 @@ void rdp_tiles_build_tlut(uint16_t *tlut_out)
 		uint16_t r = (c      ) & 0x1f;
 		uint16_t g = (c >>  5) & 0x1f;
 		uint16_t b = (c >> 10) & 0x1f;
-		tlut_out[i] = (r << 11) | (g << 6) | (b << 1) | 1;
+		uint16_t a = ((i & 0x0f) == 0) ? 0 : 1;  /* color 0 = transparent */
+		tlut_out[i] = (r << 11) | (g << 6) | (b << 1) | a;
 	}
 }
 
@@ -96,65 +101,38 @@ void rdp_tile_draw_demo(unsigned tile_vram_byte_addr, int x, int y,
 	rdpq_texture_rectangle(TILE0, x + 4, y, x + 12, y + 8, 0, 0);
 }
 
-void PicoFrameFullRDP(void)
+/* Draw one Genesis scroll plane (A or B) by iterating its 40x28
+ * visible nametable slice and issuing one rdpq upload+rect per tile.
+ * Caller is responsible for rdpq_attach + set_mode_standard + filter
+ * + tlut mode + TLUT upload + alpha compare being already set up.
+ *
+ * plane: 0 = Plane A, 1 = Plane B.  nametab base:
+ *   plane A: (reg[2] & 0x38) << 9
+ *   plane B: (reg[4] & 0x07) << 12
+ *
+ * Deferred: scroll, flip, priority, window.  Priority tiles are drawn
+ * normally here (will move to a later pass when we add sprites).
+ */
+static void draw_plane_rdp(int plane, int cols, int x_off, int y_off)
 {
-	/* Step 3b: first real tile draw path.  Renders only Plane B, no
-	 * scroll, no flip, no transparency, no sprites, H40 only.
-	 * Purpose: prove the TMEM-per-tile upload + texture_rectangle
-	 * loop produces a visually sensible approximation of the frame.
-	 * We'll layer on the missing pieces in subsequent sub-steps. */
 	struct PicoVideo *pv = &Pico.video;
-	struct PicoEState *est = &Pico.est;
+	static const uint8_t plane_shift[4] = {5, 6, 5, 7};
 
-	/* ---- Backdrop fill ----
-	 * Genesis backdrop color index = reg[7] & 0x3F, looked up in
-	 * HighPal which is already 5-5-5 BGR. */
-	uint16_t bg_bgr = est->HighPal[pv->reg[7] & 0x3f];
-	uint8_t r5 = (bg_bgr      ) & 0x1f;
-	uint8_t g5 = (bg_bgr >>  5) & 0x1f;
-	uint8_t b5 = (bg_bgr >> 10) & 0x1f;
-	uint8_t r8 = (r5 << 3) | (r5 >> 2);
-	uint8_t g8 = (g5 << 3) | (g5 >> 2);
-	uint8_t b8 = (b5 << 3) | (b5 >> 2);
-	rdpq_set_mode_fill(RGBA32(r8, g8, b8, 0xFF));
-	rdpq_fill_rectangle(0, 0, 320, 240);
+	int nametab;
+	if (plane == 0) nametab = (pv->reg[2] & 0x38) << 9;
+	else            nametab = (pv->reg[4] & 0x07) << 12;
 
-	/* ---- TLUT upload (64 Genesis colors -> TMEM) ---- */
-	static uint16_t tlut[64] __attribute__((aligned(8)));
-	rdp_tiles_build_tlut(tlut);
-	data_cache_hit_writeback(tlut, sizeof(tlut));
-
-	rdpq_set_mode_standard();
-	rdpq_mode_filter(FILTER_POINT);
-	rdpq_mode_tlut(TLUT_RGBA16);
-	rdpq_tex_upload_tlut(tlut, 0, 64);
-
-	/* ---- Plane B nametable geometry ----
-	 * reg[4] bits 0-2 select Plane B name-table base (word offset).
-	 * reg[16] encodes plane dimensions (HSZ bits 0-1, VSZ bits 4-5).
-	 * reg[12] bit 0 = H40 mode (40-cell wide display).  For the
-	 * first cut assume H40 and skip H32 centering. */
-	static const uint8_t plane_shift[4] = {5, 6, 5, 7}; /* 32/64/?/128 */
 	int plane_w_bits = plane_shift[pv->reg[16] & 3];
+	int x_mask = (1 << plane_w_bits) - 1;
 	int plane_h_mask;
 	{
 		int width  = pv->reg[16] & 3;
 		int height = (pv->reg[16] >> 4) & 3;
 		plane_h_mask = (height << 5) | 0x1f;
-		if (width == 1)       plane_h_mask &= 0x3f;
-		else if (width > 1)   plane_h_mask  = 0x1f;
+		if (width == 1)     plane_h_mask &= 0x3f;
+		else if (width > 1) plane_h_mask  = 0x1f;
 	}
-	int x_mask = (1 << plane_w_bits) - 1;
-	int nametab = (pv->reg[4] & 0x07) << 12;   /* word offset into VRAM */
-	int h40     = (pv->reg[12] & 0x01);
-	int cols    = h40 ? 40 : 32;
-	int x_off   = h40 ? 0 : 32;                 /* center H32 */
-	int y_off   = (240 - 224) / 2;              /* center 224 in 240 */
 
-	/* ---- Draw 40x28 tiles ----
-	 * One TMEM upload + one texture_rectangle per tile.  Will be
-	 * slow at first (~1120 uploads/frame); the point of this pass
-	 * is correctness before we batch. */
 	for (int row = 0; row < 28; row++) {
 		int ty = row & plane_h_mask;
 		int nt_row = nametab + (ty << plane_w_bits);
@@ -164,7 +142,6 @@ void PicoFrameFullRDP(void)
 
 			int tile_idx = entry & 0x7FF;
 			int palette  = (entry >> 13) & 0x03;
-			/* flip/priority ignored for now */
 
 			const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
 			                        + (tile_idx << 5);
@@ -179,6 +156,45 @@ void PicoFrameFullRDP(void)
 			rdpq_texture_rectangle(TILE0, sx, sy, sx + 8, sy + 8, 0, 0);
 		}
 	}
+}
+
+void PicoFrameFullRDP(void)
+{
+	/* Step 3c: Plane B + Plane A with transparency.  Flip, scroll,
+	 * priority, sprites still TODO. */
+	struct PicoVideo *pv = &Pico.video;
+	struct PicoEState *est = &Pico.est;
+
+	/* ---- Backdrop fill ---- */
+	uint16_t bg_bgr = est->HighPal[pv->reg[7] & 0x3f];
+	uint8_t r5 = (bg_bgr      ) & 0x1f;
+	uint8_t g5 = (bg_bgr >>  5) & 0x1f;
+	uint8_t b5 = (bg_bgr >> 10) & 0x1f;
+	uint8_t r8 = (r5 << 3) | (r5 >> 2);
+	uint8_t g8 = (g5 << 3) | (g5 >> 2);
+	uint8_t b8 = (b5 << 3) | (b5 >> 2);
+	rdpq_set_mode_fill(RGBA32(r8, g8, b8, 0xFF));
+	rdpq_fill_rectangle(0, 0, 320, 240);
+
+	/* ---- TLUT upload ---- */
+	static uint16_t tlut[64] __attribute__((aligned(8)));
+	rdp_tiles_build_tlut(tlut);
+	data_cache_hit_writeback(tlut, sizeof(tlut));
+
+	rdpq_set_mode_standard();
+	rdpq_mode_filter(FILTER_POINT);
+	rdpq_mode_tlut(TLUT_RGBA16);
+	rdpq_mode_alphacompare(1);        /* reject TLUT alpha=0 pixels */
+	rdpq_tex_upload_tlut(tlut, 0, 64);
+
+	/* ---- Draw both planes (B first so A overlays) ---- */
+	int h40   = (pv->reg[12] & 0x01);
+	int cols  = h40 ? 40 : 32;
+	int x_off = h40 ? 0 : 32;
+	int y_off = (240 - 224) / 2;
+
+	draw_plane_rdp(1, cols, x_off, y_off);  /* Plane B, back */
+	draw_plane_rdp(0, cols, x_off, y_off);  /* Plane A, front */
 }
 
 #endif /* N64 */
