@@ -208,49 +208,84 @@ static void draw_plane_rdp(int plane, int want_prio,
 		int first_col = (xbase >> 3);
 		int n_cols    = cols + (xsub ? 1 : 0);
 
-		/* Skip re-uploading the same tile+palette as the previous
-		 * rect; TMEM still holds it, the tile descriptor still
-		 * points at it.  Gigantic win on scenes where adjacent
-		 * nametable entries reference the same tile (menus,
-		 * empty areas, repeating backgrounds) -- which is most
-		 * scenes.  Reset across rows to keep the logic simple. */
-		int last_key = -1;
+		/* CI8 row-atlas batching.  For each row we deduplicate the
+		 * (tile_idx, palette, flip) tuples in use, convert them to
+		 * a CI8 tile (upper nibble OR'd with palette bank * 16, so
+		 * the single shared 64-entry TLUT gives the right color).
+		 * Then one upload of the whole atlas and one texture_rect
+		 * per visible column referencing its slot.  Cuts rdpq
+		 * uploads from ~40 per row to 1 per row. */
+		static uint8_t  row_atlas[40 * 64] __attribute__((aligned(8)));
+		static uint16_t row_keys [40];
+		static int8_t   col_slot [48];
+		int n_atlas = 0;
 
 		for (int col = 0; col < n_cols; col++) {
+			col_slot[col] = -1;
+
 			int tx = (first_col + col) & x_mask;
 			uint16_t entry = PicoMem.vram[nt_row + tx];
-
 			int prio = (entry >> 15) & 1;
-			if (prio != want_prio)
-				continue;
+			if (prio != want_prio) continue;
 
 			int tile_idx = entry & 0x7FF;
 			int palette  = (entry >> 13) & 0x03;
 			int hflip    = (entry >> 11) & 1;
 			int vflip    = (entry >> 12) & 1;
-			/* dedup key now includes flip -- two uses of the same
-			 * tile with different flips need separate uploads. */
-			int key = (palette << 13) | (vflip << 12) | (hflip << 11) | tile_idx;
+			uint16_t key = (palette << 13) | (vflip << 12)
+			             | (hflip << 11) | tile_idx;
 
-			if (key != last_key) {
-				const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
-				                        + (tile_idx << 5);
-				static uint8_t flip_buf[32] __attribute__((aligned(8)));
-				if (hflip || vflip) {
-					flip_tile_data(tile_src, flip_buf, hflip, vflip);
-					data_cache_hit_writeback(flip_buf, sizeof(flip_buf));
-					tile_src = flip_buf;
-				}
-				surface_t tile_surf = surface_make((void *)tile_src,
-				                                   FMT_CI4, 8, 8, 4);
-
-				rdpq_texparms_t p = { .palette = palette };
-				rdpq_tex_upload(TILE0, &tile_surf, &p);
-				last_key = key;
+			int slot = -1;
+			for (int i = 0; i < n_atlas; i++) {
+				if (row_keys[i] == key) { slot = i; break; }
 			}
+			if (slot < 0) {
+				slot = n_atlas++;
+				row_keys[slot] = key;
 
-			int sx = x_off + col * 8 - xsub;
-			rdpq_texture_rectangle(TILE0, sx, sy, sx + 8, sy + 8, 0, 0);
+				/* Source tile, flipped if needed. */
+				const uint8_t *src = ((const uint8_t *)PicoMem.vram)
+				                   + (tile_idx << 5);
+				uint8_t flipped[32];
+				if (hflip || vflip) {
+					flip_tile_data(src, flipped, hflip, vflip);
+					src = flipped;
+				}
+
+				/* CI4 -> CI8 expand, baking palette bank into the
+				 * high bits of each pixel byte so one shared TLUT
+				 * covers all 4 palettes. */
+				uint8_t pal_base = palette << 4;
+				uint8_t *dst = row_atlas + slot * 64;
+				for (int r = 0; r < 8; r++) {
+					const uint8_t *srow = src + r * 4;
+					uint8_t *drow = dst + r * 8;
+					for (int b = 0; b < 4; b++) {
+						uint8_t bv = srow[b];
+						drow[b*2    ] = ((bv >> 4) & 0x0f) | pal_base;
+						drow[b*2 + 1] = ( bv       & 0x0f) | pal_base;
+					}
+				}
+			}
+			col_slot[col] = (int8_t)slot;
+		}
+
+		if (n_atlas > 0) {
+			data_cache_hit_writeback(row_atlas, n_atlas * 64);
+			surface_t atlas_surf = surface_make(row_atlas,
+			                                    FMT_CI8,
+			                                    n_atlas * 8, 8,
+			                                    n_atlas * 8);
+			rdpq_tex_upload(TILE0, &atlas_surf, NULL);
+
+			for (int col = 0; col < n_cols; col++) {
+				int slot = col_slot[col];
+				if (slot < 0) continue;
+				int sx = x_off + col * 8 - xsub;
+				int s0 = slot * 8;
+				rdpq_texture_rectangle(TILE0, sx, sy, sx + 8, sy + 8,
+				                       s0, 0);
+			}
 		}
 	}
 }
