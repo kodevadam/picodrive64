@@ -214,15 +214,45 @@ static void draw_plane_rdp(int plane, int want_prio,
 		 * the single shared 64-entry TLUT gives the right color).
 		 * Then one upload of the whole atlas and one texture_rect
 		 * per visible column referencing its slot.  Cuts rdpq
-		 * uploads from ~40 per row to 1 per row. */
-		static uint8_t  row_atlas[40 * 64] __attribute__((aligned(8)));
-		static uint16_t row_keys [40];
+		 * uploads from ~40 per row to 1 per row, or ~2 per row if
+		 * the row's unique-tile count exceeds TMEM capacity.
+		 *
+		 * TMEM holds 2 KB of texture data in CI8 mode (the upper
+		 * 2 KB is TLUT).  At 64 bytes per 8x8 CI8 tile that's
+		 * 32 tiles max per batch.  Genesis H40 visible rows can
+		 * have up to 41 unique tiles, so flush + restart when we
+		 * hit MAX_SLOTS. */
+		enum { MAX_SLOTS = 32 };
+		static uint8_t  row_atlas[MAX_SLOTS * 64] __attribute__((aligned(8)));
+		static uint16_t row_keys [MAX_SLOTS];
 		static int8_t   col_slot [48];
 		int n_atlas = 0;
 
-		for (int col = 0; col < n_cols; col++) {
-			col_slot[col] = -1;
+		/* Inline-callable flush: upload current atlas, draw rects
+		 * for every col that has a non-negative slot, then reset. */
+		#define FLUSH_ATLAS() do { \
+			if (n_atlas > 0) { \
+				data_cache_hit_writeback(row_atlas, n_atlas * 64); \
+				surface_t atlas_surf = surface_make(row_atlas, \
+				                                    FMT_CI8, \
+				                                    n_atlas * 8, 8, \
+				                                    n_atlas * 8); \
+				rdpq_tex_upload(TILE0, &atlas_surf, NULL); \
+				for (int cc = 0; cc < n_cols; cc++) { \
+					int slot = col_slot[cc]; \
+					if (slot < 0) continue; \
+					int sx_ = x_off + cc * 8 - xsub; \
+					int s0 = slot * 8; \
+					rdpq_texture_rectangle(TILE0, sx_, sy, sx_ + 8, sy + 8, s0, 0); \
+					col_slot[cc] = -1; /* drawn; don't redraw on next flush */ \
+				} \
+				n_atlas = 0; \
+			} \
+		} while(0)
 
+		for (int col = 0; col < n_cols; col++) col_slot[col] = -1;
+
+		for (int col = 0; col < n_cols; col++) {
 			int tx = (first_col + col) & x_mask;
 			uint16_t entry = PicoMem.vram[nt_row + tx];
 			int prio = (entry >> 15) & 1;
@@ -240,10 +270,14 @@ static void draw_plane_rdp(int plane, int want_prio,
 				if (row_keys[i] == key) { slot = i; break; }
 			}
 			if (slot < 0) {
+				if (n_atlas == MAX_SLOTS) {
+					/* Atlas full: flush what we have, then this
+					 * column starts a fresh batch. */
+					FLUSH_ATLAS();
+				}
 				slot = n_atlas++;
 				row_keys[slot] = key;
 
-				/* Source tile, flipped if needed. */
 				const uint8_t *src = ((const uint8_t *)PicoMem.vram)
 				                   + (tile_idx << 5);
 				uint8_t flipped[32];
@@ -251,10 +285,6 @@ static void draw_plane_rdp(int plane, int want_prio,
 					flip_tile_data(src, flipped, hflip, vflip);
 					src = flipped;
 				}
-
-				/* CI4 -> CI8 expand, baking palette bank into the
-				 * high bits of each pixel byte so one shared TLUT
-				 * covers all 4 palettes. */
 				uint8_t pal_base = palette << 4;
 				uint8_t *dst = row_atlas + slot * 64;
 				for (int r = 0; r < 8; r++) {
@@ -270,23 +300,8 @@ static void draw_plane_rdp(int plane, int want_prio,
 			col_slot[col] = (int8_t)slot;
 		}
 
-		if (n_atlas > 0) {
-			data_cache_hit_writeback(row_atlas, n_atlas * 64);
-			surface_t atlas_surf = surface_make(row_atlas,
-			                                    FMT_CI8,
-			                                    n_atlas * 8, 8,
-			                                    n_atlas * 8);
-			rdpq_tex_upload(TILE0, &atlas_surf, NULL);
-
-			for (int col = 0; col < n_cols; col++) {
-				int slot = col_slot[col];
-				if (slot < 0) continue;
-				int sx = x_off + col * 8 - xsub;
-				int s0 = slot * 8;
-				rdpq_texture_rectangle(TILE0, sx, sy, sx + 8, sy + 8,
-				                       s0, 0);
-			}
-		}
+		FLUSH_ATLAS();
+		#undef FLUSH_ATLAS
 	}
 }
 
