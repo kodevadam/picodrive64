@@ -419,3 +419,17 @@ int posix_memalign(void **p, size_t align, size_t size)
 	}
 	return EINVAL;
 }
+
+/* libdragon has no filesystem-hierarchy primitives beyond file open/close,
+ * so stat()/mkdir() are always failure.  Prototypes from <sys/stat.h>. */
+int stat(const char *__restrict path, struct stat *__restrict st)
+{
+	(void)path; (void)st;
+	return -1;
+}
+
+int mkdir(const char *path, mode_t mode)
+{
+	(void)path; (void)mode;
+	return -1;
+}

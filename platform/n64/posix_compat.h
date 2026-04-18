@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>    /* real struct stat + stat()/mkdir() prototypes */
 #include <dir.h>
 
 /* Provide POSIX dirent types using libdragon's dir_t */
@@ -107,16 +108,9 @@ static inline char *getcwd(char *buf, int size)
 	return NULL;
 }
 
-/* stat/mkdir stubs: libdragon has no filesystem hierarchy primitives
- * beyond file open/close, so these are always failure.  Only used on
- * paths that picodrive's menu/emu code cares about (save dirs etc.). */
-struct stat {
-	unsigned long st_size;
-	unsigned long st_mode;
-	unsigned long st_mtime;
-};
-static inline int stat(const char *path, struct stat *st)  { (void)path; (void)st; return -1; }
-static inline int mkdir(const char *path, int mode)        { (void)path; (void)mode; return -1; }
+/* stat()/mkdir() prototypes come from <sys/stat.h> above; real stubs
+ * that always return -1 are provided out-of-line in plat.c so we match
+ * libdragon's declared prototypes exactly (mode_t, off_t, etc.). */
 
 /* access() stub */
 #ifndef R_OK

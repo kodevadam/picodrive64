@@ -221,9 +221,16 @@ static void draw_plane_rdp(int plane, int want_prio,
 		 * 2 KB is TLUT).  At 64 bytes per 8x8 CI8 tile that's
 		 * 32 tiles max per batch.  Genesis H40 visible rows can
 		 * have up to 41 unique tiles, so flush + restart when we
-		 * hit MAX_SLOTS. */
+		 * hit MAX_SLOTS.
+		 *
+		 * Atlas layout: ROW-MAJOR, not tile-major.  surface_make
+		 * treats the buffer as a (n_atlas*8) x 8 image with stride
+		 * ATLAS_STRIDE, so tile slot S's pixel (c,r) lives at
+		 * row_atlas[r*ATLAS_STRIDE + S*8 + c].  Using a tile-major
+		 * layout would make every slot>0 sample garbage. */
 		enum { MAX_SLOTS = 32 };
-		static uint8_t  row_atlas[MAX_SLOTS * 64] __attribute__((aligned(8)));
+		enum { ATLAS_STRIDE = MAX_SLOTS * 8 };     /* 256 B/row */
+		static uint8_t  row_atlas[8 * ATLAS_STRIDE] __attribute__((aligned(8)));
 		static uint16_t row_keys [MAX_SLOTS];
 		static int8_t   col_slot [48];
 		int n_atlas = 0;
@@ -232,11 +239,11 @@ static void draw_plane_rdp(int plane, int want_prio,
 		 * for every col that has a non-negative slot, then reset. */
 		#define FLUSH_ATLAS() do { \
 			if (n_atlas > 0) { \
-				data_cache_hit_writeback(row_atlas, n_atlas * 64); \
+				data_cache_hit_writeback(row_atlas, 8 * ATLAS_STRIDE); \
 				surface_t atlas_surf = surface_make(row_atlas, \
 				                                    FMT_CI8, \
 				                                    n_atlas * 8, 8, \
-				                                    n_atlas * 8); \
+				                                    ATLAS_STRIDE); \
 				rdpq_tex_upload(TILE0, &atlas_surf, NULL); \
 				for (int cc = 0; cc < n_cols; cc++) { \
 					int slot = col_slot[cc]; \
@@ -286,10 +293,9 @@ static void draw_plane_rdp(int plane, int want_prio,
 					src = flipped;
 				}
 				uint8_t pal_base = palette << 4;
-				uint8_t *dst = row_atlas + slot * 64;
 				for (int r = 0; r < 8; r++) {
 					const uint8_t *srow = src + r * 4;
-					uint8_t *drow = dst + r * 8;
+					uint8_t *drow = row_atlas + r * ATLAS_STRIDE + slot * 8;
 					for (int b = 0; b < 4; b++) {
 						uint8_t bv = srow[b];
 						drow[b*2    ] = ((bv >> 4) & 0x0f) | pal_base;
