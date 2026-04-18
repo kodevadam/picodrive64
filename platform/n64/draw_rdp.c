@@ -101,6 +101,40 @@ void rdp_tile_draw_demo(unsigned tile_vram_byte_addr, int x, int y,
 	rdpq_texture_rectangle(TILE0, x + 4, y, x + 12, y + 8, 0, 0);
 }
 
+/* Pre-flip a 32-byte Genesis tile (8 rows x 4 bytes of 4bpp) into
+ * a 32-byte output buffer.  Genesis CI4 tile layout: each byte
+ * packs two pixels, high nibble = left pixel, low nibble = right.
+ *
+ * Vflip: reverse row order (top<->bottom).
+ * Hflip: within each row, reverse the 4 bytes AND swap the two
+ *        nibbles of each byte (so leftmost pixel ends up rightmost).
+ *
+ * Used by both plane and sprite draws when the entry's flip bits
+ * are set, because rdpq_texture_rectangle doesn't expose negative
+ * sampling increments in the high-level API.  Out buffer must be
+ * 8-byte aligned.
+ */
+static void flip_tile_data(const uint8_t *src, uint8_t *dst,
+                           int hflip, int vflip)
+{
+	for (int r = 0; r < 8; r++) {
+		int sr = vflip ? (7 - r) : r;
+		const uint8_t *srow = src + sr * 4;
+		uint8_t *drow = dst + r * 4;
+		if (hflip) {
+			/* reverse 4 bytes AND swap nibbles within each byte */
+			for (int b = 0; b < 4; b++) {
+				uint8_t x = srow[3 - b];
+				drow[b] = ((x & 0x0f) << 4) | ((x & 0xf0) >> 4);
+			}
+		} else {
+			drow[0] = srow[0]; drow[1] = srow[1];
+			drow[2] = srow[2]; drow[3] = srow[3];
+		}
+	}
+}
+
+
 /* Draw one Genesis scroll plane (A or B) at one priority level.
  * Caller sets up rdpq state and TLUT.  Nametable-entry bit 15 is the
  * priority flag (0 = low-priority, 1 = high-priority); we skip tiles
@@ -135,34 +169,44 @@ static void draw_plane_rdp(int plane, int want_prio,
 		else if (width > 1) plane_h_mask  = 0x1f;
 	}
 
-	/* Scroll: positive hscroll slides plane to the right on screen,
-	 * so the tile at plane column (-hscroll)/8 ends up at screen
-	 * column 0.  Positive vscroll slides plane upward, so the tile
-	 * at plane row (vscroll)/8 is the first visible row. */
-	int hscroll = 0, vscroll = 0;
-	if ((pv->reg[11] & 3) == 0) {
-		int htab = (pv->reg[13] << 9) + plane;
-		hscroll = PicoMem.vram[htab & 0x7fff];
-	}
-	vscroll = PicoMem.vsram[plane] & 0x3ff;
-
-	/* Signed arithmetic: hscroll as read is effectively negated
-	 * (Genesis "shift contents right" vs. our "first visible tile
-	 * is at negative plane-x"). */
-	int xbase     = -hscroll;
-	int xsub      = xbase & 7;
-	int first_col = (xbase >> 3);
-	int n_cols    = cols + (xsub ? 1 : 0);
-
-	int ybase     = vscroll;
-	int ysub      = ybase & 7;
-	int first_row = (ybase >> 3);
-	int n_rows    = 28 + (ysub ? 1 : 0);
+	/* Scroll.  Genesis supports three hscroll modes selected by
+	 * reg[11] bits 1:0:
+	 *   0: one hscroll value for the whole plane (full-screen)
+	 *   2: one per 8-pixel row (cell-based)
+	 *   3: one per scanline (we approximate via row start)
+	 * Vscroll: full-screen mode (PicoMem.vsram[plane]).  2-cell
+	 * vscroll (reg[11] bit 2) not yet supported. */
+	int hscroll_mode = pv->reg[11] & 3;
+	int htab_base    = pv->reg[13] << 9;
+	int vscroll      = PicoMem.vsram[plane] & 0x3ff;
+	int ybase        = vscroll;
+	int ysub         = ybase & 7;
+	int first_row    = (ybase >> 3);
+	int n_rows       = 28 + (ysub ? 1 : 0);
 
 	for (int row = 0; row < n_rows; row++) {
 		int ty = (first_row + row) & plane_h_mask;
 		int nt_row = nametab + (ty << plane_w_bits);
 		int sy = y_off + row * 8 - ysub;
+
+		/* Per-row hscroll lookup by mode. */
+		int hscroll;
+		if (hscroll_mode == 0) {
+			hscroll = PicoMem.vram[(htab_base + plane) & 0x7fff];
+		} else if (hscroll_mode == 2) {
+			/* cell-based: htab stride = 16 words per row (pair of
+			 * plane A/B values per cell of 8 lines).  draw2 uses:
+			 *   htab + (trow << 4) + plane */
+			hscroll = PicoMem.vram[(htab_base + (row << 4) + plane) & 0x7fff];
+		} else {
+			/* per-scanline (mode 3) -- approximate as the value
+			 * at the first line of this tile row. */
+			hscroll = PicoMem.vram[(htab_base + (row * 8 << 1) + plane) & 0x7fff];
+		}
+		int xbase     = -hscroll;
+		int xsub      = xbase & 7;
+		int first_col = (xbase >> 3);
+		int n_cols    = cols + (xsub ? 1 : 0);
 
 		/* Skip re-uploading the same tile+palette as the previous
 		 * rect; TMEM still holds it, the tile descriptor still
@@ -182,11 +226,21 @@ static void draw_plane_rdp(int plane, int want_prio,
 
 			int tile_idx = entry & 0x7FF;
 			int palette  = (entry >> 13) & 0x03;
-			int key      = (palette << 11) | tile_idx;
+			int hflip    = (entry >> 11) & 1;
+			int vflip    = (entry >> 12) & 1;
+			/* dedup key now includes flip -- two uses of the same
+			 * tile with different flips need separate uploads. */
+			int key = (palette << 13) | (vflip << 12) | (hflip << 11) | tile_idx;
 
 			if (key != last_key) {
 				const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
 				                        + (tile_idx << 5);
+				static uint8_t flip_buf[32] __attribute__((aligned(8)));
+				if (hflip || vflip) {
+					flip_tile_data(tile_src, flip_buf, hflip, vflip);
+					data_cache_hit_writeback(flip_buf, sizeof(flip_buf));
+					tile_src = flip_buf;
+				}
 				surface_t tile_surf = surface_make((void *)tile_src,
 				                                   FMT_CI4, 8, 8, 4);
 
@@ -262,6 +316,17 @@ static void draw_sprites_rdp(int want_prio, int y_off)
 
 				const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
 				                        + (tile_idx << 5);
+				/* Pre-flip the 8x8 pixel data too, otherwise a
+				 * flipped sprite would have tiles in the right
+				 * order but each tile's pixels still unflipped --
+				 * which is what produced the "enemy ships look
+				 * wrong" report. */
+				static uint8_t flip_buf[32] __attribute__((aligned(8)));
+				if (hflip || vflip) {
+					flip_tile_data(tile_src, flip_buf, hflip, vflip);
+					data_cache_hit_writeback(flip_buf, sizeof(flip_buf));
+					tile_src = flip_buf;
+				}
 				surface_t tile_surf = surface_make((void *)tile_src,
 				                                   FMT_CI4, 8, 8, 4);
 
