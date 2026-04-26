@@ -345,8 +345,24 @@ static void draw_plane_rdp(int plane, int want_prio,
  * Within a sprite, tiles are stored column-major: tile index
  * increases going DOWN first, then RIGHT.  H/V flip is applied via
  * mirrored iteration order.  Offscreen cull is coarse (bbox vs
- * 320x224 visible rect).  Masking sprites (X=0 sentinels) and MD
- * 80/64 hardware limits are honored via the linked-list walk.
+ * 320x224 visible rect).
+ *
+ * Two-pass batched implementation (mirrors the plane row-atlas path):
+ *   pass 1: walk the sprite linked-list, accumulate per-tile entries
+ *           {sx, sy, key} into tiles[].
+ *   pass 2: stream the tiles[] array into a CI8 atlas, dedup-by-key
+ *           within the current batch, flush atlas + draw rects when
+ *           the slot count hits TMEM capacity.
+ *
+ * This collapses the previous "1 rdpq_tex_upload per sprite tile"
+ * (~120 uploads/heavy frame) down to ceil(unique_tiles / 32) atlas
+ * uploads.  In the heaviest scenes that's the difference between RDP
+ * winning and losing vs. the CPU draw2.c path.
+ *
+ * Draw order: tiles[] preserves linked-list order, and FLUSH walks
+ * tiles[] in order writing each undrawn slot to the framebuffer, so
+ * later sprites correctly overlay earlier ones within the same
+ * priority bucket -- including across atlas-flush boundaries.
  */
 static void draw_sprites_rdp(int want_prio, int y_off)
 {
@@ -357,8 +373,21 @@ static void draw_sprites_rdp(int want_prio, int y_off)
 	if (h40) table &= 0x7e;
 	table <<= 8;
 
+	/* Per-tile gather buffer.  H40 worst case is 80 sprites x 16 tiles
+	 * = 1280, but per-line MD limits cap actual draw count.  512 covers
+	 * every realistic scene; overflow (n_tiles == MAX_TILES) just stops
+	 * adding new tiles, matching the way the MD itself drops sprites
+	 * past hardware limits.  Static so we don't blow the stack. */
+	enum { MAX_TILES = 512 };
+	static struct sprite_tile {
+		int16_t  sx, sy;
+		uint16_t key;     /* (pal<<13) | (vflip<<12) | (hflip<<11) | tile_idx */
+		int16_t  slot;    /* -1 unassigned, -2 already drawn, 0..MAX_SLOTS-1 in current batch */
+	} tiles[MAX_TILES];
+	int n_tiles = 0;
+
 	int link = 0;
-	for (int u = 0; u < max_sprites; u++) {
+	for (int u = 0; u < max_sprites && n_tiles < MAX_TILES; u++) {
 		const uint16_t *attr = &PicoMem.vram[(table + link*4) & 0x7ffc];
 		uint16_t w0 = attr[0], w1 = attr[1];
 		uint16_t w2 = attr[2], w3 = attr[3];
@@ -381,35 +410,17 @@ static void draw_sprites_rdp(int want_prio, int y_off)
 		if (sx + sw <= 0 || sx >= 320) goto next;
 		if (sy + sh <= 0 || sy >= 224) goto next;
 
-		for (int tc = 0; tc < w_t; tc++) {
+		for (int tc = 0; tc < w_t && n_tiles < MAX_TILES; tc++) {
 			int scol = hflip ? (w_t - 1 - tc) : tc;
-			for (int tr = 0; tr < h_t; tr++) {
+			for (int tr = 0; tr < h_t && n_tiles < MAX_TILES; tr++) {
 				int srow = vflip ? (h_t - 1 - tr) : tr;
 				int tile_idx = (tile0 + scol * h_t + srow) & 0x7ff;
-
-				const uint8_t *tile_src = ((const uint8_t *)PicoMem.vram)
-				                        + (tile_idx << 5);
-				/* Pre-flip the 8x8 pixel data too, otherwise a
-				 * flipped sprite would have tiles in the right
-				 * order but each tile's pixels still unflipped --
-				 * which is what produced the "enemy ships look
-				 * wrong" report. */
-				static uint8_t flip_buf[32] __attribute__((aligned(8)));
-				if (hflip || vflip) {
-					flip_tile_data(tile_src, flip_buf, hflip, vflip);
-					data_cache_hit_writeback(flip_buf, sizeof(flip_buf));
-					tile_src = flip_buf;
-				}
-				surface_t tile_surf = surface_make((void *)tile_src,
-				                                   FMT_CI4, 8, 8, 4);
-
-				rdpq_texparms_t p = { .palette = pal };
-				rdpq_tex_upload(TILE0, &tile_surf, &p);
-
-				int psx = sx + tc * 8;
-				int psy = y_off + sy + tr * 8;
-				rdpq_texture_rectangle(TILE0,
-				                       psx, psy, psx + 8, psy + 8, 0, 0);
+				tiles[n_tiles].sx   = (int16_t)(sx + tc * 8);
+				tiles[n_tiles].sy   = (int16_t)(y_off + sy + tr * 8);
+				tiles[n_tiles].key  = (uint16_t)((pal << 13) | (vflip << 12)
+				                              | (hflip << 11) | tile_idx);
+				tiles[n_tiles].slot = -1;
+				n_tiles++;
 			}
 		}
 
@@ -417,6 +428,86 @@ static void draw_sprites_rdp(int want_prio, int y_off)
 		if (next == 0) break;
 		link = next;
 	}
+
+	if (n_tiles == 0) return;
+
+	/* Atlas-batch the gathered tiles.  Same MAX_SLOTS / ATLAS_STRIDE
+	 * layout as draw_plane_rdp; separate ring so plane work in the
+	 * rdpq queue can't race sprite uploads. */
+	enum { MAX_SLOTS = 32 };
+	enum { ATLAS_STRIDE = MAX_SLOTS * 8 };
+	enum { ATLAS_BYTES  = 8 * ATLAS_STRIDE };
+	enum { NUM_ATLASES  = 4 };
+	static uint8_t  spr_atlas_pool[NUM_ATLASES][ATLAS_BYTES] __attribute__((aligned(8)));
+	static int      spr_ring_idx = 0;
+	static uint16_t spr_keys[MAX_SLOTS];
+
+	uint8_t *atlas = spr_atlas_pool[spr_ring_idx];
+	spr_ring_idx = (spr_ring_idx + 1) & (NUM_ATLASES - 1);
+	int n_atlas = 0;
+
+	#define FLUSH_SPRITE_ATLAS() do { \
+		if (n_atlas > 0) { \
+			data_cache_hit_writeback(atlas, ATLAS_BYTES); \
+			surface_t surf = surface_make(atlas, FMT_CI8, \
+			                              n_atlas * 8, 8, ATLAS_STRIDE); \
+			rdpq_tex_upload(TILE0, &surf, NULL); \
+			for (int t = 0; t < n_tiles; t++) { \
+				int sl = tiles[t].slot; \
+				if (sl < 0) continue; \
+				int s0 = sl * 8; \
+				rdpq_texture_rectangle(TILE0, \
+				    tiles[t].sx, tiles[t].sy, \
+				    tiles[t].sx + 8, tiles[t].sy + 8, s0, 0); \
+				tiles[t].slot = -2; /* drawn; skip on subsequent flushes */ \
+			} \
+			n_atlas = 0; \
+			atlas = spr_atlas_pool[spr_ring_idx]; \
+			spr_ring_idx = (spr_ring_idx + 1) & (NUM_ATLASES - 1); \
+		} \
+	} while(0)
+
+	for (int t = 0; t < n_tiles; t++) {
+		uint16_t key = tiles[t].key;
+		int slot = -1;
+		for (int i = 0; i < n_atlas; i++) {
+			if (spr_keys[i] == key) { slot = i; break; }
+		}
+		if (slot < 0) {
+			if (n_atlas == MAX_SLOTS) {
+				FLUSH_SPRITE_ATLAS();
+			}
+			slot = n_atlas++;
+			spr_keys[slot] = key;
+
+			int tile_idx = key & 0x7ff;
+			int hflip    = (key >> 11) & 1;
+			int vflip    = (key >> 12) & 1;
+			int pal      = (key >> 13) & 3;
+
+			const uint8_t *src = ((const uint8_t *)PicoMem.vram)
+			                   + (tile_idx << 5);
+			uint8_t flipped[32];
+			if (hflip || vflip) {
+				flip_tile_data(src, flipped, hflip, vflip);
+				src = flipped;
+			}
+			uint8_t pal_base = pal << 4;
+			for (int r = 0; r < 8; r++) {
+				const uint8_t *srow = src + r * 4;
+				uint8_t *drow = atlas + r * ATLAS_STRIDE + slot * 8;
+				for (int b = 0; b < 4; b++) {
+					uint8_t bv = srow[b];
+					drow[b*2    ] = ((bv >> 4) & 0x0f) | pal_base;
+					drow[b*2 + 1] = ( bv       & 0x0f) | pal_base;
+				}
+			}
+		}
+		tiles[t].slot = (int16_t)slot;
+	}
+
+	FLUSH_SPRITE_ATLAS();
+	#undef FLUSH_SPRITE_ATLAS
 }
 
 void PicoFrameFullRDP(void)
